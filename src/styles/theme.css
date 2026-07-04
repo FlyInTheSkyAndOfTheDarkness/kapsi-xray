@@ -1,0 +1,101 @@
+/* ============================================================
+   Kaspi X-Ray — Design tokens
+   Palette & typography reverse-engineered from the reference
+   Kaspi-analytics product style: primary blue #0052cc, soft
+   slate surfaces, Unbounded/Inter/Caveat type, glassmorphism.
+   ============================================================ */
+
+:root {
+  /* --- Brand / primary --- */
+  --primary: #0052cc;
+  --primary-600: #0b5fdc;
+  --primary-500: #1f6fe7;
+  --primary-400: #526df1;
+  --primary-300: #657fff;
+  --primary-100: #dbeafe;
+  --primary-050: #eef4ff;
+
+  --gradient-primary: linear-gradient(135deg, #0052cc 0%, #1f6fe7 100%);
+  --gradient-primary-strong: linear-gradient(135deg, #0052cc 0%, #0b5fdc 100%);
+  --gradient-primary-card: linear-gradient(160deg, #0052cc 0%, #2270e8 100%);
+  --gradient-hero: radial-gradient(1200px 600px at 100% -10%, #dbeafe 0%, transparent 55%),
+    radial-gradient(900px 500px at -10% 0%, #eef4ff 0%, transparent 50%);
+
+  /* --- Neutrals / surfaces --- */
+  --background: #f7fafc;
+  --surface: #ffffff;
+  --surface-2: #f1f4f6;
+  --surface-3: #e9eef3;
+  --ink: #0f172a;
+  --ink-2: #1a1a2e;
+  --navy: #001b64;
+  --navy-deep: #001d54;
+
+  /* --- Text --- */
+  --text: #0f172a;
+  --text-muted: #64748b;
+  --text-soft: #94a3b8;
+  --text-on-primary: #ffffff;
+
+  /* --- Semantic --- */
+  --success: #16a34a;
+  --success-bright: #10b981;
+  --success-100: #dcfce7;
+  --danger: #dc2626;
+  --danger-500: #ef4444;
+  --danger-100: #fee2e2;
+  --warning: #d97706;
+  --warning-100: #fef3c7;
+  --gold: gold;
+  --gold-300: #ffe45c;
+  --gradient-gold: linear-gradient(135deg, gold 0%, #ffe45c 100%);
+  --whatsapp: #25d366;
+  --whatsapp-600: #1eae57;
+
+  /* --- Category / chart accents (ABC etc.) --- */
+  --c-a: #0052cc;
+  --c-b: #7c5cff;
+  --c-c: #94a3b8;
+  --chart-1: #0052cc;
+  --chart-2: #10b981;
+  --chart-3: #f59e0b;
+  --chart-4: #7c5cff;
+  --chart-5: #ef4444;
+  --chart-6: #06b6d4;
+
+  /* --- Borders / dividers --- */
+  --border: 1px solid #e5e9eb;
+  --border-soft: 1px solid #eef1f3;
+  --border-strong: 1px solid #d8dee3;
+  --divider: #eceff2;
+
+  /* --- Elevation --- */
+  --shadow-xs: 0 1px 2px rgba(15, 23, 42, 0.05);
+  --shadow-sm: 0 1px 3px rgba(15, 23, 42, 0.06), 0 1px 2px rgba(15, 23, 42, 0.04);
+  --shadow-md: 0 6px 18px rgba(15, 23, 42, 0.07), 0 2px 6px rgba(15, 23, 42, 0.04);
+  --shadow-lg: 0 18px 48px rgba(2, 32, 82, 0.12), 0 6px 16px rgba(2, 32, 82, 0.06);
+  --shadow-primary: 0 12px 30px rgba(0, 82, 204, 0.28);
+
+  /* --- Radii --- */
+  --r-xs: 8px;
+  --r-sm: 12px;
+  --r-md: 16px;
+  --r-lg: 22px;
+  --r-xl: 28px;
+  --r-pill: 999px;
+
+  /* --- Layout --- */
+  --max-w: 1180px;
+  --sidebar-w: 264px;
+  --header-h: 68px;
+
+  /* --- Type --- */
+  --font-heading: "Unbounded", "Inter", system-ui, sans-serif;
+  --font-base: "Inter", system-ui, "Apple SD Gothic Neo", Avenir, Helvetica, Arial, sans-serif;
+  --font-accent: "Caveat", cursive;
+}
+
+/* Kazakh renders better without the heavy display face on headings */
+html[lang="kk"] {
+  --font-heading: "Inter", system-ui, sans-serif;
+}

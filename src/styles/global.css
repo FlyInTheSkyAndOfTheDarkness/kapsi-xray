@@ -1,0 +1,345 @@
+/* ============================================================
+   Kaspi X-Ray — Global styles & shared UI primitives
+   ============================================================ */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  font-family: var(--font-base);
+  color: var(--text);
+  background: var(--background);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+button {
+  font-family: inherit;
+  cursor: pointer;
+}
+
+h1,
+h2,
+h3,
+h4 {
+  font-family: var(--font-heading);
+  margin: 0;
+  letter-spacing: -0.01em;
+  color: var(--ink);
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 999px;
+  border: 3px solid transparent;
+  background-clip: content-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #94a3b8;
+  background-clip: content-box;
+}
+
+/* Material Symbols */
+.msym {
+  font-family: "Material Symbols Outlined";
+  font-weight: normal;
+  font-style: normal;
+  line-height: 1;
+  letter-spacing: normal;
+  text-transform: none;
+  display: inline-block;
+  white-space: nowrap;
+  direction: ltr;
+  -webkit-font-feature-settings: "liga";
+  font-feature-settings: "liga";
+  -webkit-font-smoothing: antialiased;
+  user-select: none;
+  font-variation-settings: "FILL" 0, "wght" 400, "GRAD" 0, "opsz" 24;
+}
+
+/* ------------------------------------------------------------
+   Cards
+   ------------------------------------------------------------ */
+.card {
+  background: var(--surface);
+  border: var(--border);
+  border-radius: var(--r-md);
+  box-shadow: var(--shadow-sm);
+}
+
+.card-pad {
+  padding: 20px;
+}
+
+.card-hd {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.card-title {
+  font-family: var(--font-heading);
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.card-sub {
+  font-size: 12.5px;
+  color: var(--text-muted);
+  margin-top: 2px;
+}
+
+/* ------------------------------------------------------------
+   Buttons
+   ------------------------------------------------------------ */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border: none;
+  border-radius: var(--r-pill);
+  font-weight: 600;
+  font-size: 14px;
+  padding: 11px 20px;
+  transition: transform 0.12s ease, box-shadow 0.15s ease, background 0.15s ease;
+  white-space: nowrap;
+}
+.btn:active {
+  transform: translateY(1px);
+}
+.btn-primary {
+  background: var(--gradient-primary);
+  color: #fff;
+  box-shadow: var(--shadow-primary);
+}
+.btn-primary:hover {
+  box-shadow: 0 16px 34px rgba(0, 82, 204, 0.34);
+}
+.btn-ghost {
+  background: var(--surface);
+  color: var(--ink);
+  border: var(--border-strong);
+  box-shadow: var(--shadow-xs);
+}
+.btn-ghost:hover {
+  background: var(--surface-2);
+}
+.btn-whatsapp {
+  background: var(--whatsapp);
+  color: #fff;
+}
+.btn-sm {
+  padding: 8px 14px;
+  font-size: 13px;
+}
+
+/* ------------------------------------------------------------
+   Pills / badges / chips
+   ------------------------------------------------------------ */
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 5px 11px;
+  border-radius: var(--r-pill);
+  background: var(--surface-2);
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+.pill.pos {
+  background: var(--success-100);
+  color: var(--success);
+}
+.pill.neg {
+  background: var(--danger-100);
+  color: var(--danger);
+}
+.pill.warn {
+  background: var(--warning-100);
+  color: var(--warning);
+}
+.pill.brand {
+  background: var(--primary-050);
+  color: var(--primary);
+}
+
+.badge-abc {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 8px;
+  font-weight: 800;
+  font-size: 12px;
+  color: #fff;
+}
+.badge-abc.a { background: var(--c-a); }
+.badge-abc.b { background: var(--c-b); }
+.badge-abc.c { background: var(--c-c); }
+
+/* Numbers that carry meaning */
+.num-pos { color: var(--success); font-weight: 700; }
+.num-neg { color: var(--danger); font-weight: 700; }
+.mono {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum";
+}
+
+/* ------------------------------------------------------------
+   Tables
+   ------------------------------------------------------------ */
+.tbl-wrap {
+  overflow-x: auto;
+  border-radius: var(--r-md);
+}
+table.tbl {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13.5px;
+}
+table.tbl thead th {
+  text-align: left;
+  font-weight: 600;
+  font-size: 11.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-soft);
+  padding: 12px 14px;
+  border-bottom: var(--border);
+  white-space: nowrap;
+  position: sticky;
+  top: 0;
+  background: var(--surface);
+  cursor: pointer;
+  user-select: none;
+}
+table.tbl thead th.no-sort { cursor: default; }
+table.tbl thead th .sort-ind {
+  font-size: 15px;
+  vertical-align: middle;
+  opacity: 0.9;
+}
+table.tbl tbody td {
+  padding: 12px 14px;
+  border-bottom: var(--border-soft);
+  vertical-align: middle;
+  white-space: nowrap;
+}
+table.tbl tbody tr:hover {
+  background: var(--primary-050);
+}
+table.tbl tbody tr:last-child td {
+  border-bottom: none;
+}
+.t-right { text-align: right; }
+.t-center { text-align: center; }
+
+/* ------------------------------------------------------------
+   Inputs
+   ------------------------------------------------------------ */
+.input {
+  width: 100%;
+  border: var(--border-strong);
+  border-radius: var(--r-sm);
+  padding: 10px 14px;
+  font-size: 14px;
+  font-family: inherit;
+  color: var(--ink);
+  background: var(--surface);
+  outline: none;
+  transition: border 0.15s ease, box-shadow 0.15s ease;
+}
+.input:focus {
+  border-color: var(--primary-400);
+  box-shadow: 0 0 0 3px rgba(82, 109, 241, 0.16);
+}
+.field-label {
+  display: block;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text-muted);
+  margin-bottom: 6px;
+}
+.search-box {
+  position: relative;
+  flex: 1;
+  max-width: 420px;
+}
+.search-box .msym {
+  position: absolute;
+  left: 12px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--text-soft);
+  font-size: 20px;
+  pointer-events: none;
+}
+.search-box .input {
+  padding-left: 40px;
+  border-radius: var(--r-pill);
+}
+
+/* ------------------------------------------------------------
+   Utility
+   ------------------------------------------------------------ */
+.grid {
+  display: grid;
+  gap: 18px;
+}
+.flex {
+  display: flex;
+}
+.muted { color: var(--text-muted); }
+.soft { color: var(--text-soft); }
+.accent-note {
+  font-family: var(--font-accent);
+  color: var(--primary);
+  font-size: 20px;
+  font-weight: 600;
+}
+.section-eyebrow {
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--primary);
+}
+
+.fade-in {
+  animation: fadeIn 0.35s ease both;
+}
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: none; }
+}
+
+/* Loss row highlight for products sold at a loss */
+tr.loss-row td:first-child {
+  box-shadow: inset 3px 0 0 var(--danger-500);
+}
