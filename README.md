@@ -37,6 +37,10 @@ docker run -p 8787:8787 -v $(pwd)/data:/app/server/data kaspi-xray
 ```
 Том на `/app/server/data` сохраняет БД (аккаунты, магазины, история, алерты) между рестартами.
 
+**Сервер + субдомен + nginx:**
+готовые файлы лежат в [`deploy/`](deploy/README.md): Docker Compose, пример env и nginx-конфиг.
+Контейнер слушает только `127.0.0.1:8787`, наружу открывается HTTPS-субдомен через nginx.
+
 **Render / Railway / любой Node-хостинг:**
 - Build command: `npm install && npm run build && cd server && npm install`
 - Start command: `node server/index.js`

@@ -5,6 +5,8 @@
    ============================================================ */
 
 const BASE = 'https://kaspi.kz'
+const API_V2 = `${BASE}/shop/api/v2`
+const PRODUCTS_API = `${BASE}/shop/api/products`
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36'
 export const DEFAULT_CITY = '750000000'
 
@@ -21,7 +23,7 @@ function headers(extra = {}, referer = `${BASE}/shop/`) {
 }
 
 async function getJSON(url, opts = {}) {
-  const res = await fetch(url, opts)
+  const res = await fetchWithTimeout(url, opts, opts.timeoutMs || 15000)
   if (!res.ok) {
     const e = new Error(`Kaspi ${res.status}`)
     e.status = res.status
@@ -34,6 +36,35 @@ async function getJSON(url, opts = {}) {
     throw e
   }
   return res.json()
+}
+
+async function fetchWithTimeout(url, opts = {}, timeoutMs = 15000) {
+  const ctrl = new AbortController()
+  const t = setTimeout(() => ctrl.abort(), timeoutMs)
+  try {
+    return await fetch(url, { ...opts, signal: ctrl.signal })
+  } finally {
+    clearTimeout(t)
+  }
+}
+
+async function readJSON(res) {
+  const text = await res.text()
+  if (!text) return null
+  try {
+    return JSON.parse(text)
+  } catch {
+    return { raw: text }
+  }
+}
+
+function qs(params) {
+  const out = new URLSearchParams()
+  Object.entries(params).forEach(([k, v]) => {
+    if (v !== undefined && v !== null && v !== '') out.set(k, String(v))
+  })
+  const s = out.toString()
+  return s ? `?${s}` : ''
 }
 
 function normCard(p) {
@@ -124,30 +155,105 @@ export async function merchantInfo(merchantId, firstProductId, { city = DEFAULT_
   return { name: `Магазин #${merchantId}`, rating: null, reviews: null }
 }
 
-/* ---- Merchant cabinet API (private) — SCAFFOLD ----
-   Requires the seller's X-Auth-Token from kaspi.kz cabinet (Настройки → API).
-   Endpoint paths follow Kaspi's merchant API v2 shape; verify against your
-   cabinet docs. Without a valid token this throws with a clear message. */
+/* ---- Merchant cabinet API (private)
+   Requires the seller's X-Auth-Token from Kaspi cabinet:
+   Settings -> API token. Keep it server-side only. */
 export async function merchantApi(token, path, { method = 'GET', body, city = DEFAULT_CITY } = {}) {
   if (!token) {
     const e = new Error('NO_MERCHANT_TOKEN')
     e.code = 'NO_TOKEN'
     throw e
   }
-  const res = await fetch(`${BASE}/shop/api/v2${path}`, {
+  const url = path.startsWith('http') ? path : `${API_V2}${path.startsWith('/') ? path : `/${path}`}`
+  const res = await fetchWithTimeout(url, {
     method,
     headers: {
       'User-Agent': UA,
       Accept: 'application/vnd.api+json',
       'Content-Type': 'application/vnd.api+json',
       'X-Auth-Token': token,
+      'X-KS-City': city,
     },
     body: body ? JSON.stringify(body) : undefined,
-  })
+  }, 15000)
+  const data = await readJSON(res)
   if (!res.ok) {
     const e = new Error(`Kaspi merchant API ${res.status}`)
     e.status = res.status
+    e.data = data
     throw e
   }
-  return res.json()
+  return data
+}
+
+export async function merchantProductApi(token, path, { method = 'GET', body } = {}) {
+  if (!token) {
+    const e = new Error('NO_MERCHANT_TOKEN')
+    e.code = 'NO_TOKEN'
+    throw e
+  }
+  const url = path.startsWith('http') ? path : `${PRODUCTS_API}${path.startsWith('/') ? path : `/${path}`}`
+  const hasBody = body !== undefined && body !== null
+  const res = await fetchWithTimeout(url, {
+    method,
+    headers: {
+      'User-Agent': UA,
+      Accept: 'application/json',
+      'Content-Type': hasBody ? 'text/plain' : 'application/json',
+      'X-Auth-Token': token,
+    },
+    body: hasBody ? (typeof body === 'string' ? body : JSON.stringify(body)) : undefined,
+  }, 20000)
+  const data = await readJSON(res)
+  if (!res.ok) {
+    const e = new Error(`Kaspi products API ${res.status}`)
+    e.status = res.status
+    e.data = data
+    throw e
+  }
+  return data
+}
+
+export function merchantOrdersPath({ page = 0, size = 50, state, status, code, days = 30, includeUser = true } = {}) {
+  const now = Date.now()
+  const since = now - Math.max(1, Number(days) || 30) * 24 * 60 * 60 * 1000
+  return `/orders${qs({
+    'page[number]': Math.max(0, Number(page) || 0),
+    'page[size]': Math.min(100, Math.max(1, Number(size) || 50)),
+    'filter[orders][code]': code,
+    'filter[orders][state]': state,
+    'filter[orders][status]': status,
+    'filter[orders][creationDate][$ge]': since,
+    'filter[orders][creationDate][$le]': now,
+    'include[orders]': includeUser ? 'user' : undefined,
+  })}`
+}
+
+export async function merchantOrders(token, opts = {}) {
+  return merchantApi(token, merchantOrdersPath(opts))
+}
+
+export async function merchantOrderEntries(token, orderId) {
+  return merchantApi(token, `/orders/${encodeURIComponent(orderId)}/entries`)
+}
+
+export async function merchantOrderEntryProduct(token, entryId) {
+  return merchantApi(token, `/orderentries/${encodeURIComponent(entryId)}/product`)
+}
+
+export async function merchantImportSchema(token) {
+  return merchantProductApi(token, '/import/schema')
+}
+
+export async function merchantImportProducts(token, products) {
+  const payload = Array.isArray(products) ? products : [products]
+  return merchantProductApi(token, '/import', { method: 'POST', body: payload })
+}
+
+export async function merchantImportStatus(token, code) {
+  return merchantProductApi(token, `/import${qs({ i: code })}`)
+}
+
+export async function merchantImportResult(token, code) {
+  return merchantProductApi(token, `/import/result${qs({ i: code })}`)
 }

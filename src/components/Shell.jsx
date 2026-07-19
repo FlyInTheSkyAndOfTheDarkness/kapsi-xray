@@ -90,9 +90,9 @@ const NAV = [
     items: [
       { to: '/', key: 'overview', icon: 'dashboard', end: true },
       { to: '/products', key: 'products', icon: 'inventory_2' },
+      { to: '/repricer', key: 'repricer', icon: 'price_change' },
       { to: '/unit-economics', key: 'unit', icon: 'calculate' },
       { to: '/abc', key: 'abc', icon: 'donut_large' },
-      { to: '/connect', key: 'connect', icon: 'add_business' },
     ],
   },
   {
@@ -107,6 +107,8 @@ const NAV = [
     section: 'section_tools',
     items: [
       { to: '/calculator', key: 'calc', icon: 'percent' },
+      { to: '/taobao', key: 'taobao', icon: 'shopping_bag' },
+      { to: '/admin', key: 'admin', icon: 'admin_panel_settings', adminOnly: true },
       { to: '/settings', key: 'settings', icon: 'tune' },
     ],
   },
@@ -147,6 +149,7 @@ function LangSwitcher() {
 function Sidebar({ open, onClose }) {
   const { t } = useI18n()
   const { store } = useAppState()
+  const { user } = useAuth()
   const navigate = useNavigate()
   return (
     <>
@@ -166,7 +169,7 @@ function Sidebar({ open, onClose }) {
           {NAV.map((grp) => (
             <div className="nav-grp" key={grp.section}>
               <div className="nav-grp-title">{t(`nav.${grp.section}`)}</div>
-              {grp.items.map((it) => (
+              {grp.items.filter((it) => !it.adminOnly || user?.role === 'admin').map((it) => (
                 <NavLink
                   key={it.to}
                   to={it.to}
@@ -191,7 +194,7 @@ function Sidebar({ open, onClose }) {
             </>
           ) : (
             <>
-              <div className="side-cta-badge">🎁 {t('common.demo_note')}</div>
+              <div className="side-cta-badge"><span className="msym">storefront</span> {t('common.demo_note')}</div>
               <div className="side-cta-title">{t('topbar.connect')}</div>
               <span className="btn btn-primary btn-sm"><span className="msym">bolt</span> {t('topbar.connect')}</span>
             </>

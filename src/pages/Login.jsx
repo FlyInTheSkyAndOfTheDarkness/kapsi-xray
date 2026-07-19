@@ -17,6 +17,7 @@ export default function Login() {
       weak_password: t('auth.err_weak'),
       email_taken: t('auth.err_taken'),
       bad_credentials: t('auth.err_creds'),
+      access_denied: t('auth.err_access'),
     })[code] || t('auth.err_generic')
 
   const submit = async (e) => {

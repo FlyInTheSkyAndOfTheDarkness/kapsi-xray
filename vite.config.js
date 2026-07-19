@@ -10,11 +10,16 @@ const UA =
 export default defineConfig({
   plugins: [react()],
   server: {
+    host: '0.0.0.0',
     port: 5175,
     open: true,
     proxy: {
       // backend API (auth, stores, COGS, competitors)
       '/api': {
+        target: 'http://localhost:8787',
+        changeOrigin: true,
+      },
+      '/uploads': {
         target: 'http://localhost:8787',
         changeOrigin: true,
       },

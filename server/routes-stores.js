@@ -3,6 +3,7 @@ import { requireAuth } from './auth.js'
 import { all, find, filter, insert, update, remove, uid } from './db.js'
 import * as kaspi from './kaspi.js'
 import { estimateCard, productProfit } from './analyze.js'
+import { buildImportPayload, publicRepricer, runRepricer, sanitizeWarehouses } from './repricer.js'
 
 export const storesRouter = Router()
 storesRouter.use(requireAuth)
@@ -17,8 +18,184 @@ function parseMerchantRef(input) {
 
 const cogsMap = (userId, storeId) => {
   const map = {}
-  filter('cogs', (c) => c.userId === userId && c.storeId === storeId).forEach((c) => (map[c.sku] = c.cost))
+  filter('cogs', (c) => c.userId === userId && c.storeId === storeId).forEach((c) => (map[c.sku] = c))
   return map
+}
+
+function productSettingsPatch(body = {}) {
+  const patch = {}
+  ;['cost', 'salePrice', 'stock', 'targetMargin', 'packaging', 'logistics'].forEach((key) => {
+    if (Object.prototype.hasOwnProperty.call(body, key)) {
+      const raw = body[key]
+      patch[key] = raw === '' || raw == null ? null : Math.max(0, Number(raw) || 0)
+    }
+  })
+  if (body.warehouses !== undefined) patch.warehouses = sanitizeWarehouses(body.warehouses)
+  return patch
+}
+
+function upsertProductSettings(userId, storeId, sku, patch) {
+  const existing = find('cogs', (c) => c.userId === userId && c.storeId === storeId && c.sku === sku)
+  const clean = { ...patch, updatedAt: Date.now() }
+  if (existing) return update('cogs', existing.id, clean)
+  return insert('cogs', { id: uid(), userId, storeId, sku, cost: null, ...clean, createdAt: Date.now() })
+}
+
+function applySettings(product, settings = {}) {
+  const salePrice = settings.salePrice > 0 ? settings.salePrice : product.price
+  return {
+    ...product,
+    kaspiPrice: product.price,
+    price: salePrice,
+    salePrice,
+    cost: settings.cost || null,
+    stock: settings.stock ?? null,
+    targetMargin: settings.targetMargin ?? null,
+    packaging: settings.packaging ?? null,
+    logistics: settings.logistics ?? null,
+    warehouses: Array.isArray(settings.warehouses) ? settings.warehouses : [],
+  }
+}
+
+const listData = (json) => (Array.isArray(json?.data) ? json.data : json?.data ? [json.data] : [])
+
+function normalizeOrder(row) {
+  const a = row?.attributes || {}
+  return {
+    id: String(row?.id || ''),
+    code: a.code || row?.id || '',
+    state: a.state || '',
+    status: a.status || '',
+    deliveryMode: a.deliveryMode || a.deliveryType || '',
+    paymentMode: a.paymentMode || '',
+    totalPrice: Number(a.totalPrice || 0),
+    deliveryCost: Number(a.deliveryCost || 0),
+    creationDate: a.creationDate || null,
+    approvedByBankDate: a.approvedByBankDate || null,
+    entries: [],
+  }
+}
+
+function normalizeEntry(row, product = null) {
+  const a = row?.attributes || {}
+  const relProduct = row?.relationships?.product?.data
+  return {
+    id: String(row?.id || ''),
+    quantity: Number(a.quantity || a.qty || 1),
+    totalPrice: Number(a.totalPrice || a.basePrice || a.price || 0),
+    basePrice: Number(a.basePrice || a.price || 0),
+    productId: product?.id || relProduct?.id || a.productCode || '',
+    sku: product?.sku || product?.code || relProduct?.id || a.sku || a.productCode || '',
+    title: product?.title || product?.name || a.name || a.title || '',
+    brand: product?.brand || '',
+  }
+}
+
+function normalizeProduct(row) {
+  const a = row?.attributes || {}
+  return {
+    id: String(row?.id || ''),
+    sku: a.code || a.sku || row?.id || '',
+    code: a.code || a.sku || row?.id || '',
+    title: a.name || a.title || '',
+    name: a.name || a.title || '',
+    brand: a.brand || '',
+  }
+}
+
+async function enrichOrders(token, orders, { maxOrders = 40, maxEntries = 120 } = {}) {
+  let loadedEntries = 0
+  for (const order of orders.slice(0, maxOrders)) {
+    if (loadedEntries >= maxEntries) break
+    try {
+      const entriesJson = await kaspi.merchantOrderEntries(token, order.id)
+      const entries = []
+      for (const entryRow of listData(entriesJson)) {
+        if (loadedEntries >= maxEntries) break
+        let product = null
+        try {
+          const productJson = await kaspi.merchantOrderEntryProduct(token, entryRow.id)
+          product = normalizeProduct(productJson?.data || productJson)
+        } catch {
+          /* Product details are optional; keep the order entry without them. */
+        }
+        entries.push(normalizeEntry(entryRow, product))
+        loadedEntries++
+      }
+      order.entries = entries
+    } catch {
+      /* Some old orders may not expose entries; keep the order itself. */
+    }
+  }
+  return orders
+}
+
+function summarizeOrders(orders) {
+  const bySku = {}
+  const byDay = {}
+  let revenue = 0
+  orders.forEach((o) => {
+    revenue += o.totalPrice || 0
+    if (o.creationDate) {
+      const day = new Date(o.creationDate).toISOString().slice(0, 10)
+      byDay[day] = byDay[day] || { date: day, orders: 0, revenue: 0 }
+      byDay[day].orders += 1
+      byDay[day].revenue += o.totalPrice || 0
+    }
+    ;(o.entries || []).forEach((e) => {
+      const sku = String(e.sku || e.productId || e.id || '').trim()
+      if (!sku) return
+      bySku[sku] = bySku[sku] || { sku, title: e.title || sku, brand: e.brand || '', units: 0, revenue: 0, orders: 0 }
+      bySku[sku].units += e.quantity || 1
+      bySku[sku].revenue += e.totalPrice || e.basePrice || 0
+      bySku[sku].orders += 1
+    })
+  })
+  return {
+    orders: orders.length,
+    revenue,
+    avgCheck: orders.length ? Math.round(revenue / orders.length) : 0,
+    byDay: Object.values(byDay).sort((a, b) => a.date.localeCompare(b.date)),
+    bySku: Object.values(bySku).sort((a, b) => b.revenue - a.revenue),
+  }
+}
+
+function latestTaobaoImportsForStore(userId, storeId) {
+  const latest = new Map()
+  filter('imports', (row) => row.userId === userId && row.storeId === storeId && row.taobaoProductId)
+    .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0))
+    .forEach((row) => {
+      if (!latest.has(row.taobaoProductId)) latest.set(row.taobaoProductId, row)
+    })
+  return [...latest.values()]
+}
+
+function preorderCatalogEntries(userId, storeId) {
+  return latestTaobaoImportsForStore(userId, storeId)
+    .filter((row) => row.publishedProduct?.id || row.publishedProduct?.link)
+    .map((row) => {
+      const product = row.products?.[0] || {}
+      const published = row.publishedProduct || {}
+      return {
+        publicId: String(published.id || ''),
+        publicLink: published.link || null,
+        product: {
+          id: String(published.id || product.sku || ''),
+          title: published.title || product.title || product.sku || '',
+          brand: product.brand || '',
+          categoryName: product.category || '',
+          price: Number(published.price || product.salePrice || product.price || 0),
+          image: published.image || product.images?.[0]?.url || null,
+          link: published.link || null,
+          taobaoPreorderId: row.taobaoProductId,
+          taobaoSku: product.sku || '',
+          sourceType: 'preorder',
+          saleMode: 'preorder',
+          deliveryDays: product.deliveryDays || product.preorderDays || null,
+        },
+      }
+    })
+    .filter((entry) => entry.product.id)
 }
 
 /** POST /api/stores/connect { ref, city } — connect a store by link/merchant id. */
@@ -53,11 +230,25 @@ storesRouter.get('/:id', async (req, res) => {
   const city = req.query.city || kaspi.DEFAULT_CITY
   try {
     const { products, truncated } = await kaspi.merchantProducts(store.merchantId, { city })
-    const costs = cogsMap(req.user.id, store.id)
-    const rows = products.map((p) => {
+    const preorderEntries = preorderCatalogEntries(req.user.id, store.id)
+    const preorderById = new Map(preorderEntries.map((entry) => [entry.product.id, entry.product]))
+    const mergedProducts = products.map((product) => {
+      const preorder = preorderById.get(product.id)
+      return preorder ? { ...product, ...preorder, price: product.price || preorder.price, link: product.link || preorder.link } : { ...product, sourceType: 'regular', saleMode: 'regular' }
+    })
+    const seen = new Set(mergedProducts.map((product) => product.id))
+    preorderEntries.forEach((entry) => {
+      if (!seen.has(entry.product.id)) {
+        seen.add(entry.product.id)
+        mergedProducts.push(entry.product)
+      }
+    })
+    const settings = cogsMap(req.user.id, store.id)
+    const rows = mergedProducts.map((p) => {
+      const product = applySettings(p, settings[p.id] || settings[p.taobaoSku])
       const est = estimateCard(p)
-      const profit = productProfit(p, costs[p.id], est)
-      return { ...p, cost: costs[p.id] || null, est, profit }
+      const profit = productProfit(product, product.cost, est)
+      return { ...product, est, profit }
     })
     res.json({ store: publicStore(store), products: rows, truncated })
   } catch {
@@ -85,12 +276,133 @@ storesRouter.put('/:id/cogs', (req, res) => {
   res.json({ ok: true, sku, cost })
 })
 
-/** POST /api/stores/:id/token { token } — save the Kaspi merchant API token. */
-storesRouter.post('/:id/token', (req, res) => {
+/** PUT /api/stores/:id/products/:sku/settings — edit local product management fields. */
+storesRouter.put('/:id/products/:sku/settings', (req, res) => {
   const store = find('stores', (s) => s.id === req.params.id && s.userId === req.user.id)
   if (!store) return res.status(404).json({ error: 'not_found' })
-  update('stores', store.id, { token: req.body?.token ? String(req.body.token) : null })
-  res.json({ ok: true, hasToken: !!req.body?.token })
+  const sku = String(req.params.sku || req.body?.sku || '').trim()
+  if (!sku) return res.status(400).json({ error: 'bad_sku' })
+  const row = upsertProductSettings(req.user.id, store.id, sku, productSettingsPatch(req.body || {}))
+  res.json({ ok: true, settings: row })
+})
+
+/** POST /api/stores/:id/products/:sku/publish — send price/stock change to Kaspi import API. */
+storesRouter.post('/:id/products/:sku/publish', async (req, res) => {
+  const store = find('stores', (s) => s.id === req.params.id && s.userId === req.user.id)
+  if (!store) return res.status(404).json({ error: 'not_found' })
+  if (!store.token) return res.status(400).json({ error: 'no_token' })
+  const sku = String(req.params.sku || req.body?.sku || '').trim()
+  if (!sku) return res.status(400).json({ error: 'bad_sku' })
+  const settings = upsertProductSettings(req.user.id, store.id, sku, productSettingsPatch(req.body?.settings || {}))
+  const product = { ...(req.body?.product || {}), sku, id: sku }
+  const payload = buildImportPayload(product, settings)
+  if (!payload.sku || !payload.price) return res.status(400).json({ error: 'bad_product_payload', product: payload })
+  try {
+    const result = await kaspi.merchantImportProducts(store.token, [payload])
+    const row = insert('imports', { id: uid(), userId: req.user.id, storeId: store.id, code: result?.code || null, status: result?.status || null, products: [payload], createdAt: Date.now() })
+    res.json({ ok: true, import: row, result, product: payload })
+  } catch (e) {
+    res.status(e.status === 401 ? 401 : 502).json({ error: 'merchant_import_failed', status: e.status || null, details: e.data || null })
+  }
+})
+
+/** GET /api/stores/:id/repricers — list dumping-bot rules for this store. */
+storesRouter.get('/:id/repricers', (req, res) => {
+  const store = find('stores', (s) => s.id === req.params.id && s.userId === req.user.id)
+  if (!store) return res.status(404).json({ error: 'not_found' })
+  const rules = filter('repricers', (r) => r.userId === req.user.id && r.storeId === store.id).map(publicRepricer)
+  res.json({ rules })
+})
+
+/** POST /api/stores/:id/repricers — create a dumping-bot rule. */
+storesRouter.post('/:id/repricers', (req, res) => {
+  const store = find('stores', (s) => s.id === req.params.id && s.userId === req.user.id)
+  if (!store) return res.status(404).json({ error: 'not_found' })
+  const product = req.body?.product || {}
+  const sku = String(req.body?.sku || product.id || product.sku || '').trim()
+  if (!sku) return res.status(400).json({ error: 'bad_sku' })
+  const minPrice = Math.max(0, Number(req.body?.minPrice) || 0)
+  if (!minPrice) return res.status(400).json({ error: 'bad_min_price' })
+  const row = insert('repricers', {
+    id: uid(),
+    userId: req.user.id,
+    storeId: store.id,
+    sku,
+    title: product.title || sku,
+    product,
+    minPrice,
+    step: Math.max(1, Number(req.body?.step) || 1),
+    frequencyMinutes: Math.max(5, Number(req.body?.frequencyMinutes) || 60),
+    warehouses: sanitizeWarehouses(req.body?.warehouses),
+    stock: req.body?.stock === '' || req.body?.stock == null ? null : Math.max(0, Number(req.body.stock) || 0),
+    currentPrice: Number(req.body?.currentPrice || product.price || 0),
+    active: !!req.body?.active,
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+    nextRunAt: Date.now() + Math.max(5, Number(req.body?.frequencyMinutes) || 60) * 60_000,
+  })
+  res.json({ rule: publicRepricer(row) })
+})
+
+/** PUT /api/stores/:id/repricers/:rid — update a dumping-bot rule. */
+storesRouter.put('/:id/repricers/:rid', (req, res) => {
+  const store = find('stores', (s) => s.id === req.params.id && s.userId === req.user.id)
+  if (!store) return res.status(404).json({ error: 'not_found' })
+  const rule = find('repricers', (r) => r.id === req.params.rid && r.userId === req.user.id && r.storeId === store.id)
+  if (!rule) return res.status(404).json({ error: 'not_found' })
+  const patch = { updatedAt: Date.now() }
+  if (req.body?.minPrice !== undefined) patch.minPrice = Math.max(0, Number(req.body.minPrice) || 0)
+  if (req.body?.step !== undefined) patch.step = Math.max(1, Number(req.body.step) || 1)
+  if (req.body?.frequencyMinutes !== undefined) {
+    patch.frequencyMinutes = Math.max(5, Number(req.body.frequencyMinutes) || 60)
+    patch.nextRunAt = Date.now() + patch.frequencyMinutes * 60_000
+  }
+  if (req.body?.warehouses !== undefined) patch.warehouses = sanitizeWarehouses(req.body.warehouses)
+  if (req.body?.stock !== undefined) patch.stock = req.body.stock === '' || req.body.stock == null ? null : Math.max(0, Number(req.body.stock) || 0)
+  if (req.body?.active !== undefined) patch.active = !!req.body.active
+  const saved = update('repricers', rule.id, patch)
+  res.json({ rule: publicRepricer(saved) })
+})
+
+/** DELETE /api/stores/:id/repricers/:rid */
+storesRouter.delete('/:id/repricers/:rid', (req, res) => {
+  const store = find('stores', (s) => s.id === req.params.id && s.userId === req.user.id)
+  if (!store) return res.status(404).json({ error: 'not_found' })
+  remove('repricers', (r) => r.id === req.params.rid && r.userId === req.user.id && r.storeId === store.id)
+  res.json({ ok: true })
+})
+
+/** POST /api/stores/:id/repricers/:rid/run — check competitors and push price if needed. */
+storesRouter.post('/:id/repricers/:rid/run', async (req, res) => {
+  const store = find('stores', (s) => s.id === req.params.id && s.userId === req.user.id)
+  if (!store) return res.status(404).json({ error: 'not_found' })
+  const rule = find('repricers', (r) => r.id === req.params.rid && r.userId === req.user.id && r.storeId === store.id)
+  if (!rule) return res.status(404).json({ error: 'not_found' })
+  try {
+    const saved = await runRepricer(rule)
+    res.json({ rule: publicRepricer(saved) })
+  } catch (e) {
+    update('repricers', rule.id, { lastRunAt: Date.now(), lastError: e.status === 401 ? 'token_failed' : 'repricer_failed', updatedAt: Date.now() })
+    res.status(e.status === 401 ? 401 : 502).json({ error: 'repricer_failed', status: e.status || null, details: e.data || null })
+  }
+})
+
+/** POST /api/stores/:id/token { token } — save the Kaspi merchant API token. */
+storesRouter.post('/:id/token', async (req, res) => {
+  const store = find('stores', (s) => s.id === req.params.id && s.userId === req.user.id)
+  if (!store) return res.status(404).json({ error: 'not_found' })
+  const token = req.body?.token ? String(req.body.token).trim() : ''
+  if (!token) {
+    update('stores', store.id, { token: null, tokenCheckedAt: Date.now(), tokenStatus: 'empty' })
+    return res.json({ ok: true, hasToken: false, tokenOk: false })
+  }
+  try {
+    await kaspi.merchantImportSchema(token)
+    update('stores', store.id, { token, tokenCheckedAt: Date.now(), tokenStatus: 'ok' })
+    res.json({ ok: true, hasToken: true, tokenOk: true })
+  } catch (e) {
+    res.status(e.status === 401 || e.status === 403 ? 401 : 502).json({ error: 'token_check_failed', status: e.status || null })
+  }
 })
 
 /** GET /api/stores/:id/orders — real orders via merchant API (needs token). */
@@ -99,9 +411,68 @@ storesRouter.get('/:id/orders', async (req, res) => {
   if (!store) return res.status(404).json({ error: 'not_found' })
   if (!store.token) return res.status(400).json({ error: 'no_token' })
   try {
-    const data = await kaspi.merchantApi(store.token, '/orders?page[number]=0&page[size]=50&filter[orders][state]=ARCHIVE')
-    res.json({ orders: data })
+    const data = await kaspi.merchantOrders(store.token, {
+      page: req.query.page || 0,
+      size: req.query.size || 50,
+      days: req.query.days || 30,
+      state: req.query.state,
+      status: req.query.status,
+      code: req.query.code,
+    })
+    const orders = listData(data).map(normalizeOrder)
+    if (req.query.entries === '1') await enrichOrders(store.token, orders)
+    res.json({ orders, meta: data?.meta || null, raw: req.query.raw === '1' ? data : undefined })
   } catch (e) {
     res.status(e.status === 401 ? 401 : 502).json({ error: 'merchant_api_failed', status: e.status || null })
+  }
+})
+
+/** GET /api/stores/:id/seller-summary — real sales summary from seller cabinet. */
+storesRouter.get('/:id/seller-summary', async (req, res) => {
+  const store = find('stores', (s) => s.id === req.params.id && s.userId === req.user.id)
+  if (!store) return res.status(404).json({ error: 'not_found' })
+  if (!store.token) return res.status(400).json({ error: 'no_token' })
+  try {
+    const days = Math.max(1, Math.min(180, Number(req.query.days) || 30))
+    const data = await kaspi.merchantOrders(store.token, { size: req.query.size || 50, days, state: req.query.state, status: req.query.status })
+    const orders = listData(data).map(normalizeOrder)
+    if (req.query.entries !== '0') await enrichOrders(store.token, orders)
+    res.json({ periodDays: days, summary: summarizeOrders(orders), orders, meta: data?.meta || null })
+  } catch (e) {
+    res.status(e.status === 401 ? 401 : 502).json({ error: 'merchant_api_failed', status: e.status || null })
+  }
+})
+
+/** POST /api/stores/:id/import-products — upload products to Kaspi cabinet. */
+storesRouter.post('/:id/import-products', async (req, res) => {
+  const store = find('stores', (s) => s.id === req.params.id && s.userId === req.user.id)
+  if (!store) return res.status(404).json({ error: 'not_found' })
+  if (!store.token) return res.status(400).json({ error: 'no_token' })
+  const products = Array.isArray(req.body?.products) ? req.body.products : req.body?.product ? [req.body.product] : []
+  if (!products.length) return res.status(400).json({ error: 'empty_products' })
+  const missing = products.find((p) => !p?.sku || !p?.title || !p?.brand || !p?.category)
+  if (missing) return res.status(400).json({ error: 'missing_product_fields' })
+  try {
+    const result = await kaspi.merchantImportProducts(store.token, products)
+    const row = insert('imports', { id: uid(), userId: req.user.id, storeId: store.id, code: result?.code || null, status: result?.status || null, products, createdAt: Date.now() })
+    res.json({ ok: true, import: row, result })
+  } catch (e) {
+    res.status(e.status === 401 ? 401 : 502).json({ error: 'merchant_import_failed', status: e.status || null, details: e.data || null })
+  }
+})
+
+/** GET /api/stores/:id/imports/:code — check Kaspi import status/result. */
+storesRouter.get('/:id/imports/:code', async (req, res) => {
+  const store = find('stores', (s) => s.id === req.params.id && s.userId === req.user.id)
+  if (!store) return res.status(404).json({ error: 'not_found' })
+  if (!store.token) return res.status(400).json({ error: 'no_token' })
+  try {
+    const [status, result] = await Promise.all([
+      kaspi.merchantImportStatus(store.token, req.params.code).catch((e) => ({ error: e.status || true })),
+      kaspi.merchantImportResult(store.token, req.params.code).catch((e) => ({ error: e.status || true })),
+    ])
+    res.json({ code: req.params.code, status, result })
+  } catch (e) {
+    res.status(e.status === 401 ? 401 : 502).json({ error: 'merchant_import_failed', status: e.status || null })
   }
 })

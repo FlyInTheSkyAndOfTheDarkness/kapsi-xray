@@ -4,9 +4,10 @@ import { useI18n } from '../i18n/index.jsx'
 import { useAppState } from '../state/AppState.jsx'
 import { useCompetitors } from '../state/Competitors.jsx'
 import { PageHead, StatCard, Card, Segmented } from '../components/ui.jsx'
-import { TimeBars, Sparkline } from '../components/Charts.jsx'
+import { TimeBars, Sparkline, ForecastBars } from '../components/Charts.jsx'
 import { searchProducts, getOffers, getReviews, parseProductRef } from '../data/kaspiApi.js'
 import { estimateSales, analyzeOffers, buildSalesSeries, resolveMultiplierKey, DEFAULT_MULTIPLIERS, REVIEW_TO_ORDER } from '../lib/salesEstimate.js'
+import { buildAnnualForecast } from '../lib/forecast.js'
 import { addSnapshot, getSnapshots, todayKey } from '../lib/store.js'
 import { exportCSV } from '../lib/csv.js'
 import { tenge, tengeShort, num, pct } from '../lib/format.js'
@@ -268,10 +269,15 @@ function Detail({ t, lang, navigate, err, product, offers, comp, est, rating, so
   const [sp] = useSearchParams()
   const [period, setPeriod] = useState(sp.get('period') || 'd30')
   const [metric, setMetric] = useState(sp.get('metric') === 'revenue' ? 'revenue' : 'units')
+  const [forecastMetric, setForecastMetric] = useState(sp.get('forecastMetric') === 'revenue' ? 'revenue' : 'units')
   const [cumulative, setCumulative] = useState(sp.get('cum') === '1')
   const series = useMemo(
     () => buildSalesSeries(rating.reviews, { period, multiplier: est.multiplier || REVIEW_TO_ORDER, total: rating.ratingsTotal, lang, price: product.price || 0 }),
     [period, rating, est.multiplier, lang, product.price]
+  )
+  const annual = useMemo(
+    () => buildAnnualForecast(rating.reviews, { multiplier: est.multiplier || REVIEW_TO_ORDER, lang, price: product.price || 0, monthsBack: 12, monthsAhead: 6 }),
+    [rating.reviews, est.multiplier, lang, product.price]
   )
   const periodOpts = [
     { value: 'd7', label: t('xray.p7') },
@@ -394,6 +400,45 @@ function Detail({ t, lang, navigate, err, product, offers, comp, est, rating, so
             {t('xray.partial_note')}
           </div>
         )}
+      </Card>
+
+      <Card
+        title={t('xray.annual_title')}
+        sub={t('xray.annual_sub')}
+        aside={
+          <Segmented
+            options={[
+              { value: 'units', label: t('xray.metric_units') },
+              { value: 'revenue', label: t('xray.metric_revenue') },
+            ]}
+            value={forecastMetric}
+            onChange={setForecastMetric}
+          />
+        }
+        className="dyn-card"
+      >
+        <div className="annual-kpis">
+          <div className="metric"><div className="m-lbl">{t('xray.annual_sales')}</div><div className="m-val">{num(annual.annualSales)} {t('xray.per_unit_short')}</div></div>
+          <div className="metric"><div className="m-lbl">{t('xray.annual_revenue')}</div><div className="m-val">{tengeShort(annual.annualRevenue, lang)}</div></div>
+          <div className="metric"><div className="m-lbl">{t('xray.forecast_6m')}</div><div className="m-val">{forecastMetric === 'revenue' ? tengeShort(annual.forecastRevenue, lang) : `${num(annual.forecastSales)} ${t('xray.per_unit_short')}`}</div></div>
+          <div className="metric"><div className="m-lbl">{t('xray.next_month')}</div><div className="m-val">{forecastMetric === 'revenue' ? tengeShort(annual.nextMonthRevenue, lang) : `${num(annual.nextMonthSales)} ${t('xray.per_unit_short')}`}</div></div>
+        </div>
+        <ForecastBars
+          model={annual}
+          metric={forecastMetric}
+          lang={lang}
+          labels={{
+            actual: t('xray.history_12m'),
+            forecast: t('xray.forecast'),
+            ratings: t('xray.ratings'),
+            units: t('xray.per_unit_short'),
+            empty: t('xray.no_reviews'),
+          }}
+        />
+        <div className="mini-note" style={{ marginTop: 8, alignItems: 'flex-start' }}>
+          <span className="msym">auto_graph</span>
+          {t('xray.forecast_note', { m: annual.nonZeroMonths })}
+        </div>
       </Card>
 
       <div className="grid-2" style={{ marginTop: 18 }}>

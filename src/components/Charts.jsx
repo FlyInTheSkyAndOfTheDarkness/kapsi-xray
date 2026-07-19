@@ -335,6 +335,80 @@ export function TimeBars({ series, labels, metric = 'units', cumulative = false,
 }
 
 /* ------------------------------------------------------------------
+   ForecastBars — 12 months history + future forecast.
+   Actual and forecast bars share one axis; a divider marks "today".
+   ------------------------------------------------------------------ */
+export function ForecastBars({ model, labels, metric = 'units', lang = 'ru' }) {
+  const [hi, setHi] = useState(null)
+  const rows = model?.rows || []
+  if (!rows.length) return <p className="muted">{labels.empty}</p>
+
+  const isRev = metric === 'revenue'
+  const val = (d) => (isRev ? d.revenue : d.sales)
+  const fmt = (v) => (isRev ? tengeShort(v, lang) : num(v))
+  const unitWord = isRev ? '₸' : labels.units
+
+  const W = 720
+  const H = 240
+  const padL = 8
+  const padR = 8
+  const padT = 16
+  const padB = 32
+  const iw = W - padL - padR
+  const ih = H - padT - padB
+  const n = rows.length
+  const max = Math.max(1, ...rows.map(val))
+  const slot = iw / n
+  const gap = n > 16 ? 4 : 6
+  const bw = Math.max(4, slot - gap)
+  const baseY = padT + ih
+  const xCenter = (i) => padL + i * slot + slot / 2
+  const sepX = padL + model.history.length * slot
+  const tickIdx = rows.map((_, i) => i).filter((i) => i === 0 || i === model.history.length - 1 || i === model.history.length || i === rows.length - 1)
+
+  return (
+    <div className="chart-block forecast-chart">
+      <div className="legend">
+        <span className="lg"><i className="sw" style={{ background: 'var(--primary)' }} />{labels.actual}</span>
+        <span className="lg"><i className="sw" style={{ background: 'var(--success)' }} />{labels.forecast}</span>
+      </div>
+      <svg viewBox={`0 0 ${W} ${H}`} className="linechart" onMouseLeave={() => setHi(null)}>
+        {[0, 0.5, 1].map((g, i) => (
+          <line key={i} x1={padL} x2={W - padR} y1={padT + ih * g} y2={padT + ih * g} stroke="#eef1f3" strokeWidth="1" />
+        ))}
+        <line x1={sepX} x2={sepX} y1={padT} y2={baseY} stroke="#94a3b8" strokeWidth="1" strokeDasharray="5 5" />
+        {rows.map((d, i) => {
+          const h = val(d) > 0 ? Math.max(2, (val(d) / max) * ih) : 0
+          const x = padL + i * slot + (slot - bw) / 2
+          const on = hi === i
+          const color = d.forecast ? 'var(--success)' : 'var(--primary)'
+          return (
+            <g key={d.key}>
+              <rect x={padL + i * slot} y={padT} width={slot} height={ih} fill="transparent" onMouseEnter={() => setHi(i)} />
+              {h > 0 ? (
+                <rect x={x} y={baseY - h} width={bw} height={h} rx={Math.min(4, bw / 2)} fill={color} opacity={hi == null || on ? (d.forecast ? 0.82 : 1) : 0.45} />
+              ) : (
+                <rect x={x} y={baseY - 2} width={bw} height={2} rx={1} fill="#dbe3ea" />
+              )}
+            </g>
+          )
+        })}
+        {tickIdx.map((i) => (
+          <text key={i} x={xCenter(i)} y={H - 10} textAnchor="middle" className="ax-lbl">{rows[i].label}</text>
+        ))}
+      </svg>
+      {hi != null && (
+        <div className="chart-tip" style={{ left: `${(xCenter(hi) / W) * 100}%` }}>
+          <div className="tip-hd">{rows[hi].label}</div>
+          <div className="tip-row"><i className="sw" style={{ background: rows[hi].forecast ? 'var(--success)' : 'var(--primary)' }} />{rows[hi].forecast ? labels.forecast : labels.actual}: <b>{fmt(val(rows[hi]))}</b> {unitWord}</div>
+          {!rows[hi].forecast && <div className="tip-row soft-tip">{num(rows[hi].ratings)} {labels.ratings}</div>}
+        </div>
+      )}
+    </div>
+  )
+}
+
+/* ------------------------------------------------------------------
    ParetoCurve — ABC cumulative profit share on ONE % axis.
    Points colored by A/B/C group (identity via secondary encoding
    + legend), 80%/95% reference lines.

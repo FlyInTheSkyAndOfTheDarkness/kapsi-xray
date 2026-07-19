@@ -23,7 +23,7 @@ ReactDOM.createRoot(document.getElementById('root')).render(
           <StoreDataProvider>
             <CompetitorsProvider>
               <AlertsProvider>
-                <BrowserRouter>
+                <BrowserRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
                   <App />
                 </BrowserRouter>
               </AlertsProvider>

@@ -9,10 +9,13 @@ import { tenge, tengeShort, num, pct } from '../lib/format.js'
 export default function Connect() {
   const { t, lang } = useI18n()
   const navigate = useNavigate()
-  const { hasStore, store, products, truncated, loading, stores, activeId, setActive, connect, disconnect, setCogs, setToken } = useStore()
+  const { hasStore, store, products, truncated, loading, stores, activeId, setActive, connect, disconnect, setCogs, setToken, sellerSummary, sellerLoading, refreshSellerSummary } = useStore()
   const [params] = useSearchParams()
   const [input, setInput] = useState('')
   const [tokenInput, setTokenInput] = useState('')
+  const [tokenBusy, setTokenBusy] = useState(false)
+  const [tokenMsg, setTokenMsg] = useState(null)
+  const [tokenErr, setTokenErr] = useState(null)
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState(null)
   const ran = useRef(false)
@@ -30,6 +33,19 @@ export default function Connect() {
     finally { setBusy(false) }
   }
 
+  async function saveToken(token) {
+    setTokenBusy(true); setTokenErr(null); setTokenMsg(null)
+    try {
+      await setToken(token)
+      setTokenInput('')
+      setTokenMsg(token ? t('connect.token_ok') : t('connect.token_cleared'))
+    } catch (e) {
+      setTokenErr(e.code === 'token_check_failed' ? t('connect.token_failed') : t('connect.err_generic'))
+    } finally {
+      setTokenBusy(false)
+    }
+  }
+
   const totals = useMemo(() => {
     const revenue = products.reduce((s, r) => s + (r.est?.revenue || 0), 0)
     const sales = products.reduce((s, r) => s + (r.est?.sales || 0), 0)
@@ -37,6 +53,12 @@ export default function Connect() {
     const withCost = products.filter((r) => r.cost).length
     return { revenue, sales, profit, withCost }
   }, [products])
+  const real = sellerSummary?.summary || null
+  const realSkuMap = useMemo(() => {
+    const map = new Map()
+    ;(real?.bySku || []).forEach((r) => map.set(String(r.sku), r))
+    return map
+  }, [real])
 
   const showForm = !hasStore && !loading
 
@@ -81,12 +103,57 @@ export default function Connect() {
             <button className="btn btn-primary btn-sm" onClick={() => navigate('/')}><span className="msym">dashboard</span> {t('nav.overview')}</button>
           </Card>
 
+          <Card title={t('connect.control_title')} sub={t('connect.control_sub')} className="fade-in merchant-control">
+            <div className="control-grid">
+              <div className={`api-status ${store.hasToken ? 'on' : ''}`}>
+                <span className="msym">{store.hasToken ? 'verified_user' : 'vpn_key_alert'}</span>
+                <div>
+                  <b>{store.hasToken ? t('connect.api_connected') : t('connect.api_missing')}</b>
+                  <div className="muted">{store.hasToken ? t('connect.api_connected_sub') : t('connect.api_missing_sub')}</div>
+                </div>
+              </div>
+              <div className="token-inline">
+                <div className="search-box" style={{ maxWidth: 'none', flex: 1 }}><span className="msym">key</span>
+                  <input className="input mono" type="password" placeholder={t('connect.token_ph')} value={tokenInput} onChange={(e) => setTokenInput(e.target.value)} />
+                </div>
+                <button className="btn btn-primary" onClick={() => saveToken(tokenInput)} disabled={!tokenInput || tokenBusy}><span className={`msym ${tokenBusy ? 'spin' : ''}`}>{tokenBusy ? 'progress_activity' : 'save'}</span> {t('connect.token_save')}</button>
+                {store.hasToken && <button className="btn btn-ghost" onClick={() => saveToken('')} disabled={tokenBusy}><span className="msym">key_off</span> {t('connect.token_clear')}</button>}
+              </div>
+            </div>
+            {tokenMsg && <div className="cf-ok"><span className="msym">check_circle</span>{tokenMsg}</div>}
+            {tokenErr && <div className="cf-err"><span className="msym">error</span>{tokenErr}</div>}
+            <div className="quick-actions">
+              <button className="btn btn-ghost" onClick={() => navigate('/products')}><span className="msym">inventory_2</span>{t('connect.manage_products')}</button>
+              <button className="btn btn-ghost" onClick={() => navigate('/repricer')}><span className="msym">price_change</span>{t('connect.open_repricer')}</button>
+              <button className="btn btn-ghost" onClick={() => navigate('/taobao')}><span className="msym">shopping_bag</span>{t('connect.open_taobao')}</button>
+            </div>
+            <div className="mini-note" style={{ alignItems: 'flex-start' }}><span className="msym">info</span>{t('connect.token_note')}</div>
+          </Card>
+
           <div className="stat-grid" style={{ marginTop: 18 }}>
             <StatCard icon="inventory_2" label={t('connect.products')} value={`${num(products.length)}${truncated ? '+' : ''}`} />
             <StatCard icon="payments" label={t('connect.est_revenue')} value={tengeShort(totals.revenue, lang)} hint={tenge(totals.revenue)} />
             <StatCard icon="savings" tone={totals.profit >= 0 ? 'good' : 'bad'} label={t('connect.est_profit')} value={totals.profit ? tengeShort(totals.profit, lang) : '—'} hint={`${totals.withCost}/${products.length} ${t('connect.with_cost')}`} />
             <StatCard icon="local_shipping" label={t('connect.est_sales')} value={`${num(totals.sales)} ${t('xray.per_unit_short')}`} />
           </div>
+
+          {store.hasToken && (
+            <Card title={t('connect.seller_live_title')} sub={t('connect.seller_live_sub', { days: sellerSummary?.periodDays || 30 })} className="fade-in"
+              aside={<button className="btn btn-ghost btn-sm" onClick={() => refreshSellerSummary()} disabled={sellerLoading}><span className={`msym ${sellerLoading ? 'spin' : ''}`}>{sellerLoading ? 'progress_activity' : 'refresh'}</span> {t('competitors.poll')}</button>}>
+              {sellerLoading && !real ? (
+                <div className="mini-note"><span className="msym spin">progress_activity</span>{t('xray.loading')}</div>
+              ) : real ? (
+                <div className="stat-grid" style={{ marginBottom: 0 }}>
+                  <StatCard icon="receipt_long" label={t('connect.real_orders')} value={num(real.orders || 0)} />
+                  <StatCard icon="payments" label={t('connect.real_revenue')} value={tengeShort(real.revenue || 0, lang)} hint={tenge(real.revenue || 0)} />
+                  <StatCard icon="shopping_cart" label={t('connect.real_avg_check')} value={tengeShort(real.avgCheck || 0, lang)} />
+                  <StatCard icon="inventory" label={t('connect.real_skus')} value={num(real.bySku?.length || 0)} />
+                </div>
+              ) : (
+                <div className="mini-note"><span className="msym">info</span>{t('connect.seller_empty')}</div>
+              )}
+            </Card>
+          )}
 
           <Card title={t('connect.catalog')} sub={t('connect.catalog_cogs')} pad={false}
             aside={<button className="btn btn-ghost btn-sm" onClick={() => exportCSV('kaspi-xray-store.csv', [
@@ -98,38 +165,33 @@ export default function Connect() {
               <table className="tbl">
                 <thead><tr>
                   <th className="no-sort">{t('common.product')}</th><th className="no-sort t-right">{t('common.price')}</th><th className="no-sort t-right">{t('connect.cost')}</th>
-                  <th className="no-sort t-right">{t('connect.est_sales')}</th><th className="no-sort t-right">{t('common.margin')}</th><th className="no-sort t-right">{t('connect.est_profit')}</th><th className="no-sort"></th>
+                  <th className="no-sort t-right">{t('connect.est_sales')}</th>{store.hasToken && <th className="no-sort t-right">{t('connect.real_sales')}</th>}<th className="no-sort t-right">{t('common.margin')}</th><th className="no-sort t-right">{t('connect.est_profit')}</th><th className="no-sort"></th>
                 </tr></thead>
                 <tbody>
-                  {products.map((r) => (
-                    <tr key={r.id} className={r.profit?.isLoss ? 'loss-row' : ''}>
-                      <td><div className="pcell" style={{ cursor: 'pointer' }} onClick={() => navigate(`/xray?q=${r.id}`)}>
-                        <div className="pthumb" style={{ overflow: 'hidden' }}>{r.image ? <img src={r.image} alt="" style={{ width: '100%', height: '100%', objectFit: 'contain' }} /> : <span className="msym">inventory_2</span>}</div>
-                        <div><div className="pname" title={r.title}>{r.title}</div><div className="pmeta">{r.categoryName || r.brand}</div></div>
-                      </div></td>
-                      <td className="t-right mono">{tenge(r.price)}</td>
-                      <td className="t-right"><input className="input mono cogs-input" type="number" min="0" defaultValue={r.cost || ''} placeholder="—"
-                        onBlur={(e) => { const v = Math.max(0, Number(e.target.value) || 0); if (v !== (r.cost || 0)) setCogs(r.id, v) }} onKeyDown={(e) => e.key === 'Enter' && e.target.blur()} /></td>
-                      <td className="t-right mono">{num(r.est?.sales || 0)} {t('xray.per_unit_short')}</td>
-                      <td className={`t-right mono ${r.profit && r.profit.marginPct < 0 ? 'num-neg' : ''}`}>{r.profit ? pct(r.profit.marginPct, 1) : '—'}</td>
-                      <td className={`t-right mono ${r.profit ? (r.profit.monthlyProfit < 0 ? 'num-neg' : 'num-pos') : ''}`}>{r.profit ? tengeShort(r.profit.monthlyProfit, lang) : '—'}</td>
-                      <td className="t-right"><button className="btn btn-ghost btn-sm" onClick={() => navigate(`/xray?q=${r.id}`)}><span className="msym">radar</span></button></td>
-                    </tr>
-                  ))}
+                  {products.map((r) => {
+                    const realRow = realSkuMap.get(String(r.id))
+                    return (
+                      <tr key={r.id} className={r.profit?.isLoss ? 'loss-row' : ''}>
+                        <td><div className="pcell" style={{ cursor: 'pointer' }} onClick={() => navigate(`/xray?q=${r.id}`)}>
+                          <div className="pthumb" style={{ overflow: 'hidden' }}>{r.image ? <img src={r.image} alt="" style={{ width: '100%', height: '100%', objectFit: 'contain' }} /> : <span className="msym">inventory_2</span>}</div>
+                          <div><div className="pname" title={r.title}>{r.title}</div><div className="pmeta">{r.categoryName || r.brand}</div></div>
+                        </div></td>
+                        <td className="t-right mono">{tenge(r.price)}</td>
+                        <td className="t-right"><input className="input mono cogs-input" type="number" min="0" defaultValue={r.cost || ''} placeholder="—"
+                          onBlur={(e) => { const v = Math.max(0, Number(e.target.value) || 0); if (v !== (r.cost || 0)) setCogs(r.id, v) }} onKeyDown={(e) => e.key === 'Enter' && e.target.blur()} /></td>
+                        <td className="t-right mono">{num(r.est?.sales || 0)} {t('xray.per_unit_short')}</td>
+                        {store.hasToken && <td className="t-right mono">{realRow ? `${num(realRow.units)} ${t('xray.per_unit_short')}` : '—'}</td>}
+                        <td className={`t-right mono ${r.profit && r.profit.marginPct < 0 ? 'num-neg' : ''}`}>{r.profit ? pct(r.profit.marginPct, 1) : '—'}</td>
+                        <td className={`t-right mono ${r.profit ? (r.profit.monthlyProfit < 0 ? 'num-neg' : 'num-pos') : ''}`}>{r.profit ? tengeShort(r.profit.monthlyProfit, lang) : '—'}</td>
+                        <td className="t-right"><button className="btn btn-ghost btn-sm" onClick={() => navigate(`/xray?q=${r.id}`)}><span className="msym">radar</span></button></td>
+                      </tr>
+                    )
+                  })}
                 </tbody>
               </table>
             </div>
           </Card>
 
-          <Card title={t('connect.token_title')} sub={t('connect.token_sub')} className="fade-in">
-            <div className="cf-row">
-              <div className="search-box" style={{ maxWidth: 'none', flex: 1 }}><span className="msym">key</span>
-                <input className="input mono" type="password" placeholder={t('connect.token_ph')} value={tokenInput} onChange={(e) => setTokenInput(e.target.value)} />
-              </div>
-              <button className="btn btn-ghost" onClick={() => { setToken(tokenInput); setTokenInput('') }} disabled={!tokenInput}><span className="msym">save</span> {t('connect.token_save')}</button>
-            </div>
-            <div className="mini-note" style={{ alignItems: 'flex-start' }}><span className="msym">info</span>{t('connect.token_note')}</div>
-          </Card>
         </div>
       )}
     </div>

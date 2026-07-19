@@ -4,7 +4,9 @@ import { useI18n } from '../i18n/index.jsx'
 import { PageHead, Card } from '../components/ui.jsx'
 import { Waterfall } from '../components/Charts.jsx'
 import { unitEconomics, recommendedPrice, breakEvenPrice } from '../lib/economics.js'
+import { resolveFeeRules } from '../lib/feeRules.js'
 import { tenge, num, pct } from '../lib/format.js'
+import { useAppState } from '../state/AppState.jsx'
 
 const TARGET_MARGIN = 25
 
@@ -29,16 +31,18 @@ function Field({ label, value, onChange, suffix }) {
 
 export default function Calculator() {
   const { t, lang } = useI18n()
+  const { feeRules } = useAppState()
   const [params] = useSearchParams()
   const seedPrice = Number(params.get('price'))
+  const defaultFees = resolveFeeRules({ price: seedPrice > 0 ? seedPrice : 24900 }, feeRules)
   const [f, setF] = useState({
     price: seedPrice > 0 ? seedPrice : 24900,
     purchase: seedPrice > 0 ? Math.round(seedPrice * 0.62) : 15200,
     commission: 12,
     tax: 3,
-    delivery: 900,
-    packaging: 250,
-    returns: 6,
+    delivery: defaultFees.delivery,
+    packaging: defaultFees.packaging,
+    returns: defaultFees.returns,
   })
   const set = (k) => (v) => setF((s) => ({ ...s, [k]: v }))
   const clean = useMemo(() => Object.fromEntries(Object.entries(f).map(([k, v]) => [k, v === '' ? 0 : v])), [f])

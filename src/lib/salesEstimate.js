@@ -50,7 +50,7 @@ export function resolveMultiplier(strings, overrides) {
 }
 
 /** Parse Kaspi's "DD.MM.YYYY" review date to a JS Date. */
-function parseKaspiDate(s) {
+export function parseKaspiDate(s) {
   const m = /^(\d{2})\.(\d{2})\.(\d{4})$/.exec(s || '')
   if (!m) return null
   return new Date(Number(m[3]), Number(m[2]) - 1, Number(m[1]))

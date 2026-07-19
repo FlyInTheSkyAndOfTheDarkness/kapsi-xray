@@ -4,15 +4,16 @@ import { useI18n } from '../i18n/index.jsx'
 import { PageHead, Card, ConnectPrompt } from '../components/ui.jsx'
 import { Waterfall } from '../components/Charts.jsx'
 import { useStore } from '../state/Store.jsx'
+import { useAppState } from '../state/AppState.jsx'
 import { unitEconomics } from '../lib/economics.js'
+import { resolveFeeRules } from '../lib/feeRules.js'
 import { tenge, num, pct } from '../lib/format.js'
-
-const FEES = { commission: 12, tax: 3, delivery: 900, packaging: 250, returns: 6 }
 
 export default function UnitEconomics() {
   const { t, lang } = useI18n()
   const navigate = useNavigate()
   const { hasStore, products, loading, setCogs } = useStore()
+  const { feeRules } = useAppState()
   const [q, setQ] = useState('')
   const [selId, setSelId] = useState(null)
 
@@ -27,7 +28,10 @@ export default function UnitEconomics() {
   if (!product) return <div className="fade-in"><PageHead title={t('unit.title')} sub={t('unit.subtitle')} /><div className="xray-empty card card-pad"><span className="msym spin">progress_activity</span></div></div>
 
   const cost = product.cost || 0
-  const econ = cost > 0 ? unitEconomics({ price: product.price, purchase: cost, ...FEES }) : null
+  const fees = resolveFeeRules(product, feeRules)
+  if (product.packaging != null) fees.packaging = Number(product.packaging) || 0
+  if (product.logistics != null) fees.delivery = Number(product.logistics) || 0
+  const econ = cost > 0 ? unitEconomics({ price: product.price, purchase: cost, ...fees }) : null
   const wfLabels = { sale_price: t('unit.sale_price'), purchase: t('unit.purchase'), kaspi_commission: t('unit.kaspi_commission'), delivery: t('unit.delivery'), tax: t('unit.tax'), packaging: t('unit.packaging'), returns_cost: t('unit.returns_cost'), net: t('unit.net') }
 
   return (

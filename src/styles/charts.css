@@ -122,6 +122,35 @@
   border-color: #0f172a;
 }
 
+.annual-kpis {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(130px, 1fr));
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.annual-kpis .metric {
+  background: var(--surface-2);
+  border-radius: var(--r-sm);
+  padding: 12px;
+}
+
+.forecast-chart .legend {
+  margin-bottom: 4px;
+}
+
+@media (max-width: 760px) {
+  .annual-kpis {
+    grid-template-columns: repeat(2, minmax(130px, 1fr));
+  }
+}
+
+@media (max-width: 460px) {
+  .annual-kpis {
+    grid-template-columns: 1fr;
+  }
+}
+
 /* Sparkline */
 .spark {
   display: block;

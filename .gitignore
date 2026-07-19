@@ -10,6 +10,7 @@ server/dist/
 server/data/
 .env
 .env.*
+deploy/kaspi-xray.env
 *.local
 
 # logs

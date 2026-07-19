@@ -1,4 +1,4 @@
-import { Routes, Route } from 'react-router-dom'
+import { Navigate, Routes, Route, useParams } from 'react-router-dom'
 import { useAuth } from './state/Auth.jsx'
 import Shell from './components/Shell.jsx'
 import Login from './pages/Login.jsx'
@@ -12,6 +12,16 @@ import Competitors from './pages/Competitors.jsx'
 import Settings from './pages/Settings.jsx'
 import Connect from './pages/Connect.jsx'
 import Calculator from './pages/Calculator.jsx'
+import TaobaoImport from './pages/TaobaoImport.jsx'
+import TaobaoPreorders from './pages/TaobaoPreorders.jsx'
+import TaobaoPreorderDetail from './pages/TaobaoPreorderDetail.jsx'
+import Repricer from './pages/Repricer.jsx'
+import Admin from './pages/Admin.jsx'
+
+function LegacyTaobaoPreorder() {
+  const { id } = useParams()
+  return <Navigate replace to={id ? `/taobao/preorders/${id}` : '/taobao/preorders'} />
+}
 
 export default function App() {
   const { ready, user } = useAuth()
@@ -37,7 +47,14 @@ export default function App() {
         <Route path="/competitors" element={<Competitors />} />
         <Route path="/settings" element={<Settings />} />
         <Route path="/connect" element={<Connect />} />
+        <Route path="/repricer" element={<Repricer />} />
         <Route path="/calculator" element={<Calculator />} />
+        <Route path="/taobao" element={<TaobaoImport />} />
+        <Route path="/taobao/preorders" element={<TaobaoPreorders />} />
+        <Route path="/taobao/preorders/:id" element={<TaobaoPreorderDetail />} />
+        <Route path="/admin" element={user.role === 'admin' ? <Admin /> : <Navigate replace to="/" />} />
+        <Route path="/taobao-preorders" element={<LegacyTaobaoPreorder />} />
+        <Route path="/taobao-preorders/:id" element={<LegacyTaobaoPreorder />} />
         <Route path="*" element={<Overview />} />
       </Routes>
     </Shell>

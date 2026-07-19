@@ -1,4 +1,5 @@
-import { useMemo } from 'react'
+import { useMemo, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { useI18n } from '../i18n/index.jsx'
 import { PageHead, StatCard, Card, ConnectPrompt } from '../components/ui.jsx'
 import { DonutBreakdown, BarList } from '../components/Charts.jsx'
@@ -7,7 +8,9 @@ import { tenge, tengeShort, num, pct } from '../lib/format.js'
 
 export default function Overview() {
   const { t, lang } = useI18n()
+  const navigate = useNavigate()
   const { hasStore, store, products, loading } = useStore()
+  const [selectedId, setSelectedId] = useState(null)
 
   const agg = useMemo(() => {
     const revenue = products.reduce((s, p) => s + (p.est?.revenue || 0), 0)
@@ -50,6 +53,8 @@ export default function Overview() {
   const top5 = [...products].sort((a, b) => (b.est?.revenue || 0) - (a.est?.revenue || 0)).slice(0, 5)
     .map((p) => ({ label: p.title, value: p.est?.revenue || 0, sub: `${num(p.est?.sales || 0)} ${t('xray.per_unit_short')} · ${tenge(p.price)}` }))
   const catBars = Object.entries(agg.byCat).sort((a, b) => b[1] - a[1]).slice(0, 6).map(([k, v]) => ({ label: k, value: v }))
+  const productList = [...products].sort((a, b) => (b.profit?.monthlyProfit || b.est?.revenue || 0) - (a.profit?.monthlyProfit || a.est?.revenue || 0)).slice(0, 10)
+  const selected = products.find((p) => p.id === selectedId) || productList[0] || products[0]
   const expItems = [
     { label: t('overview.exp_cogs'), value: agg.exp.cogs },
     { label: t('overview.exp_commission'), value: agg.exp.commission },
@@ -90,6 +95,37 @@ export default function Overview() {
           )}
         </Card>
       </div>
+
+      {selected && (
+        <Card title={t('overview.product_analytics')} sub={t('overview.product_analytics_sub')} className="product-drilldown">
+          <div className="product-drill-grid">
+            <div className="product-drill-list">
+              {productList.map((p) => (
+                <button key={p.id} className={p.id === selected.id ? 'on' : ''} onClick={() => setSelectedId(p.id)}>
+                  <span>{p.title}</span>
+                  <b className={p.profit?.isLoss ? 'num-neg' : ''}>{p.profit ? tengeShort(p.profit.monthlyProfit, lang) : tengeShort(p.est?.revenue || 0, lang)}</b>
+                </button>
+              ))}
+            </div>
+            <div className="product-drill-detail">
+              <div className="pcell product-drill-head">
+                <div className="pthumb" style={{ overflow: 'hidden' }}>{selected.image ? <img src={selected.image} alt="" style={{ width: '100%', height: '100%', objectFit: 'contain' }} /> : <span className="msym">inventory_2</span>}</div>
+                <div><div className="pname">{selected.title}</div><div className="pmeta">{selected.id} · {selected.categoryName || selected.brand}</div></div>
+              </div>
+              <div className="metric-row">
+                <div className="metric"><div className="m-lbl">{t('common.price')}</div><div className="m-val">{tenge(selected.price)}</div></div>
+                <div className="metric"><div className="m-lbl">{t('connect.cost')}</div><div className="m-val">{selected.cost ? tenge(selected.cost) : '—'}</div></div>
+                <div className="metric"><div className="m-lbl">{t('common.margin')}</div><div className={`m-val ${selected.profit?.marginPct < 0 ? 'num-neg' : ''}`}>{selected.profit ? pct(selected.profit.marginPct, 1) : '—'}</div></div>
+                <div className="metric"><div className="m-lbl">{t('products.profit_unit')}</div><div className={`m-val ${selected.profit?.unitNet < 0 ? 'num-neg' : ''}`}>{selected.profit ? tenge(selected.profit.unitNet, { sign: true }) : '—'}</div></div>
+              </div>
+              <div className="quick-actions">
+                <button className="btn btn-primary btn-sm" onClick={() => navigate(`/xray?q=${selected.id}`)}><span className="msym">radar</span>{t('overview.open_xray')}</button>
+                <button className="btn btn-ghost btn-sm" onClick={() => navigate('/products')}><span className="msym">edit</span>{t('overview.edit_product')}</button>
+              </div>
+            </div>
+          </div>
+        </Card>
+      )}
 
       <Card title={t('overview.by_category')} sub={t('connect.est_revenue')}>
         <BarList items={catBars} lang={lang} />

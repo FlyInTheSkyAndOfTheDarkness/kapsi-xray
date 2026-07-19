@@ -1,6 +1,6 @@
 import { Router } from 'express'
 import { requireAuth } from './auth.js'
-import { filter, find, insert, remove, uid } from './db.js'
+import { filter, find, insert, remove, update, uid } from './db.js'
 import { snapshotProduct, todayKey } from './analyze.js'
 import { initBaseline, checkAndEmitAlerts } from './alerts.js'
 import * as kaspi from './kaspi.js'
@@ -28,6 +28,19 @@ export function recordSnapshot(userId, refType, refId, snap) {
 
 const latest = (userId, refId) =>
   filter('snapshots', (s) => s.userId === userId && s.refId === refId).sort((a, b) => b.ts - a.ts)[0] || null
+
+function productDraft(comp, snap, overrides = {}) {
+  const image = snap?.image || comp.image || null
+  return {
+    sku: overrides.sku || `KX-${comp.productId}`,
+    title: overrides.title || comp.title || snap?.title || `Товар ${comp.productId}`,
+    brand: overrides.brand || '',
+    category: overrides.category || '',
+    description: overrides.description || `${comp.title || snap?.title || comp.productId}. Подготовлено из Kaspi X-Ray по анализу конкурентов.`,
+    attributes: Array.isArray(overrides.attributes) ? overrides.attributes : [],
+    images: overrides.images || (image ? [{ url: image }] : []),
+  }
+}
 
 /** POST /api/competitors { ref, city } — start tracking a competitor product. */
 competitorsRouter.post('/', async (req, res) => {
@@ -57,6 +70,60 @@ competitorsRouter.get('/', (req, res) => {
     return { ...c, last, priceChange, points: snaps.length }
   })
   res.json({ competitors: list.sort((a, b) => (b.last?.estRevenue || 0) - (a.last?.estRevenue || 0)) })
+})
+
+/** GET /api/competitors/opportunities — products prepared for seller import. */
+competitorsRouter.get('/opportunities', (req, res) => {
+  const opportunities = filter('opportunities', (o) => o.userId === req.user.id).sort((a, b) => b.createdAt - a.createdAt)
+  res.json({ opportunities })
+})
+
+/** POST /api/competitors/:id/opportunity — save competitor product as a sell candidate. */
+competitorsRouter.post('/:id/opportunity', (req, res) => {
+  const comp = find('competitors', (c) => c.id === req.params.id && c.userId === req.user.id)
+  if (!comp) return res.status(404).json({ error: 'not_found' })
+  const storeId = req.body?.storeId || null
+  if (storeId && !find('stores', (s) => s.id === storeId && s.userId === req.user.id)) return res.status(404).json({ error: 'store_not_found' })
+  const snap = latest(req.user.id, comp.id)
+  const draft = productDraft(comp, snap, req.body?.product || {})
+  const existing = find('opportunities', (o) => o.userId === req.user.id && o.competitorId === comp.id && (storeId ? o.storeId === storeId : !o.storeId))
+  const patch = {
+    storeId,
+    productId: comp.productId,
+    competitorId: comp.id,
+    title: comp.title,
+    image: comp.image,
+    link: comp.link,
+    lastPrice: snap?.price || null,
+    estSales: snap?.estSales || 0,
+    estRevenue: snap?.estRevenue || 0,
+    sellers: snap?.sellers || 0,
+    buyBoxMerchant: snap?.buyBoxMerchant || null,
+    draft,
+    status: 'draft',
+    updatedAt: Date.now(),
+  }
+  const row = existing ? update('opportunities', existing.id, patch) : insert('opportunities', { id: uid(), userId: req.user.id, createdAt: Date.now(), ...patch })
+  res.json({ opportunity: row })
+})
+
+/** POST /api/competitors/:id/publish — upload a prepared product to Kaspi cabinet. */
+competitorsRouter.post('/:id/publish', async (req, res) => {
+  const comp = find('competitors', (c) => c.id === req.params.id && c.userId === req.user.id)
+  if (!comp) return res.status(404).json({ error: 'not_found' })
+  const store = find('stores', (s) => s.id === req.body?.storeId && s.userId === req.user.id)
+  if (!store) return res.status(404).json({ error: 'store_not_found' })
+  if (!store.token) return res.status(400).json({ error: 'no_token' })
+  const snap = latest(req.user.id, comp.id)
+  const product = productDraft(comp, snap, req.body?.product || {})
+  if (!product.sku || !product.title || !product.brand || !product.category) return res.status(400).json({ error: 'missing_product_fields', draft: product })
+  try {
+    const result = await kaspi.merchantImportProducts(store.token, [product])
+    const row = insert('imports', { id: uid(), userId: req.user.id, storeId: store.id, competitorId: comp.id, code: result?.code || null, status: result?.status || null, products: [product], createdAt: Date.now() })
+    res.json({ ok: true, import: row, result })
+  } catch (e) {
+    res.status(e.status === 401 ? 401 : 502).json({ error: 'merchant_import_failed', status: e.status || null, details: e.data || null })
+  }
 })
 
 /** GET /api/competitors/:id/history — full snapshot history. */
