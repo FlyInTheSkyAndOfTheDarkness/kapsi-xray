@@ -6,25 +6,29 @@ import { tenge } from '../lib/format.js'
 import { Card, PageHead, Segmented } from '../components/ui.jsx'
 import TaobaoTabs from '../components/TaobaoTabs.jsx'
 
-const STATUS_META = {
+/* The real path to the shelf: our draft → card in Kaspi → SKU in the price list →
+   Kaspi pulls the feed → seller links it in «Без привязки» → on sale. */
+const STAGE_META = {
   draft: { icon: 'edit_note', tone: 'brand' },
-  processing: { icon: 'hourglass_top', tone: 'warn' },
-  verifying: { icon: 'manage_search', tone: 'warn' },
-  published: { icon: 'check_circle', tone: 'pos' },
-  rejected: { icon: 'cancel', tone: 'neg' },
+  card_sent: { icon: 'hourglass_top', tone: 'warn' },
+  in_feed: { icon: 'rss_feed', tone: 'warn' },
+  awaiting_link: { icon: 'link_off', tone: 'neg' },
+  on_sale: { icon: 'check_circle', tone: 'pos' },
+  blocked: { icon: 'error', tone: 'neg' },
 }
+const STAGES = ['draft', 'card_sent', 'in_feed', 'awaiting_link', 'on_sale', 'blocked']
 
 function dateTime(value) {
   if (!value) return '—'
   return new Intl.DateTimeFormat('ru-RU', { dateStyle: 'short', timeStyle: 'short' }).format(new Date(value))
 }
 
-function StatusPill({ state, t }) {
-  const meta = STATUS_META[state] || STATUS_META.processing
+function StagePill({ stage, t }) {
+  const meta = STAGE_META[stage] || STAGE_META.card_sent
   return (
     <span className={`pill ${meta.tone}`}>
       <span className="msym">{meta.icon}</span>
-      {t(`preorders.status_${state || 'processing'}`)}
+      {t(`preorders.stage_${stage || 'card_sent'}`)}
     </span>
   )
 }
@@ -59,7 +63,7 @@ export default function TaobaoPreorders() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  const hasProcessing = rows.some((row) => ['processing', 'verifying'].includes(row.import?.state))
+  const hasProcessing = rows.some((row) => ['card_sent', 'in_feed'].includes(row.stage))
   useEffect(() => {
     if (!hasProcessing) return undefined
     const timer = window.setInterval(() => load({ sync: true, quiet: true }), 20_000)
@@ -68,18 +72,20 @@ export default function TaobaoPreorders() {
   }, [hasProcessing])
 
   const counts = useMemo(() => rows.reduce((acc, row) => {
-    const state = row.import?.state || 'processing'
-    acc[state] = (acc[state] || 0) + 1
+    const stage = row.stage || 'card_sent'
+    acc[stage] = (acc[stage] || 0) + 1
     return acc
-  }, { draft: 0, processing: 0, verifying: 0, published: 0, rejected: 0 }), [rows])
+  }, Object.fromEntries(STAGES.map((stage) => [stage, 0]))), [rows])
 
   const visible = useMemo(() => {
     const query = search.trim().toLowerCase()
     return rows.filter((row) => {
-      if (filter !== 'all' && row.import?.state !== filter) return false
+      if (filter !== 'all' && (row.stage || 'card_sent') !== filter) return false
       return !query || `${row.title} ${row.sku} ${row.store?.name || ''}`.toLowerCase().includes(query)
     })
   }, [rows, filter, search])
+
+  const awaitingLink = counts.awaiting_link || 0
 
   const retry = async (row) => {
     setRetrying(row.id)
@@ -97,11 +103,7 @@ export default function TaobaoPreorders() {
 
   const filters = [
     { value: 'all', label: `${t('preorders.filter_all')} ${rows.length}` },
-    { value: 'draft', label: `${t('preorders.status_draft')} ${counts.draft}` },
-    { value: 'processing', label: `${t('preorders.status_processing')} ${counts.processing}` },
-    { value: 'verifying', label: `${t('preorders.status_verifying')} ${counts.verifying}` },
-    { value: 'published', label: `${t('preorders.status_published')} ${counts.published}` },
-    { value: 'rejected', label: `${t('preorders.status_rejected')} ${counts.rejected}` },
+    ...STAGES.map((stage) => ({ value: stage, label: `${t(`preorders.stage_${stage}`)} ${counts[stage]}` })),
   ]
 
   return (
@@ -116,6 +118,19 @@ export default function TaobaoPreorders() {
         </button>
       </PageHead>
       <TaobaoTabs preorderCount={rows.length} />
+
+      {awaitingLink > 0 && (
+        <div className="preorder-link-banner">
+          <span className="msym">link_off</span>
+          <div>
+            <b>{t('preorders.awaiting_link_title', { count: awaitingLink })}</b>
+            <span>{t('preorders.awaiting_link_how')}</span>
+          </div>
+          <a className="btn btn-primary btn-sm" href="https://kaspi.kz/mc/#/unrecognized" target="_blank" rel="noreferrer">
+            <span className="msym">open_in_new</span>{t('preorders.open_cabinet')}
+          </a>
+        </div>
+      )}
 
       <Card className="preorders-list" pad={false} title={t('preorders.list_title')} sub={t('preorders.list_sub')} aside={(
         <input className="input preorder-search" value={search} onChange={(e) => setSearch(e.target.value)} placeholder={t('preorders.search')} />
@@ -150,7 +165,7 @@ export default function TaobaoPreorders() {
               </thead>
               <tbody>
                 {visible.map((row) => {
-                  const state = row.import?.state || 'processing'
+                  const stage = row.stage || 'card_sent'
                   const busy = retrying === row.id
                   return (
                     <tr key={row.id}>
@@ -175,24 +190,29 @@ export default function TaobaoPreorders() {
                         <div className="preorder-meta">{t('products.sale_price')}: {row.price ? tenge(row.price) : '—'}</div>
                       </td>
                       <td data-label={t('preorders.status')}>
-                        <StatusPill state={state} t={t} />
-                        {state !== 'draft' && <div className="preorder-meta mono">{row.import?.technicalStatus || 'UPLOADED'}</div>}
+                        <StagePill stage={stage} t={t} />
+                        {stage !== 'draft' && <div className="preorder-meta mono">{row.import?.technicalStatus || 'UPLOADED'}</div>}
                       </td>
                       <td className="preorder-result" data-label={t('preorders.result')}>
-                        {state === 'rejected' ? (
+                        {stage === 'awaiting_link' ? (
                           <>
-                            <div className="preorder-reason">{row.import?.reason}</div>
-                            <div className="preorder-advice"><span className="msym">lightbulb</span>{row.import?.recommendation}</div>
+                            <div className="preorder-reason">{t('preorders.awaiting_link_note')}</div>
+                            <div className="preorder-advice"><span className="msym">lightbulb</span>{t('preorders.awaiting_link_how')}</div>
                           </>
-                        ) : state === 'published' ? (
+                        ) : stage === 'blocked' ? (
+                          <>
+                            <div className="preorder-reason">{row.import?.reason || row.feed?.issues?.map((issue) => t(`feed.issue_${issue}`)).join(' ')}</div>
+                            <div className="preorder-advice"><span className="msym">lightbulb</span>{row.import?.recommendation || t('preorders.blocked_how')}</div>
+                          </>
+                        ) : stage === 'on_sale' ? (
                           <>
                             <div className="preorder-success"><span className="msym">verified</span>{t('preorders.published_note')}</div>
                             {row.import?.productLink && <a className="preorder-link" href={row.import.productLink} target="_blank" rel="noreferrer"><span className="msym">open_in_new</span>{t('preorder_detail.open_kaspi')}</a>}
                           </>
-                        ) : state === 'draft' ? (
+                        ) : stage === 'draft' ? (
                           <div className="preorder-draft"><span className="msym">edit_note</span>{t('preorders.draft_note')}</div>
-                        ) : state === 'verifying' ? (
-                          <div className="preorder-wait"><span className="msym">manage_search</span>{t('preorders.verifying_note')}</div>
+                        ) : stage === 'in_feed' ? (
+                          <div className="preorder-wait"><span className="msym">rss_feed</span>{t('preorders.in_feed_note')}</div>
                         ) : (
                           <div className="preorder-wait"><span className="msym">schedule</span>{t('preorders.processing_note')}</div>
                         )}
@@ -203,7 +223,7 @@ export default function TaobaoPreorders() {
                           <button className="icon-btn" title={t('preorders.edit')} onClick={() => navigate(`/taobao/preorders/${row.id}`)}>
                             <span className="msym">edit</span>
                           </button>
-                          {state === 'rejected' && row.store?.hasToken && (
+                          {stage === 'blocked' && row.import?.state === 'rejected' && !row.cardLocked && row.store?.hasToken && (
                             <button className="btn btn-primary btn-sm" onClick={() => retry(row)} disabled={busy}>
                               <span className={`msym ${busy ? 'spin' : ''}`}>{busy ? 'progress_activity' : 'refresh'}</span>
                               {t('preorders.retry')}

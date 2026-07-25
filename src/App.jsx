@@ -15,6 +15,7 @@ import Calculator from './pages/Calculator.jsx'
 import TaobaoImport from './pages/TaobaoImport.jsx'
 import TaobaoPreorders from './pages/TaobaoPreorders.jsx'
 import TaobaoPreorderDetail from './pages/TaobaoPreorderDetail.jsx'
+import KaspiFeed from './pages/KaspiFeed.jsx'
 import Repricer from './pages/Repricer.jsx'
 import Admin from './pages/Admin.jsx'
 
@@ -52,6 +53,7 @@ export default function App() {
         <Route path="/taobao" element={<TaobaoImport />} />
         <Route path="/taobao/preorders" element={<TaobaoPreorders />} />
         <Route path="/taobao/preorders/:id" element={<TaobaoPreorderDetail />} />
+        <Route path="/taobao/feed" element={<KaspiFeed />} />
         <Route path="/admin" element={user.role === 'admin' ? <Admin /> : <Navigate replace to="/" />} />
         <Route path="/taobao-preorders" element={<LegacyTaobaoPreorder />} />
         <Route path="/taobao-preorders/:id" element={<LegacyTaobaoPreorder />} />

@@ -6,7 +6,8 @@
   "description": "Kaspi X-Ray backend — auth, stores, COGS, competitor tracking, Kaspi proxy",
   "scripts": {
     "start": "node index.js",
-    "dev": "node --watch index.js"
+    "dev": "node --watch index.js",
+    "test": "node --test \"test/*.test.js\""
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",

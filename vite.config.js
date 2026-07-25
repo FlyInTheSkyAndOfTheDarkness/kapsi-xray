@@ -23,6 +23,11 @@ export default defineConfig({
         target: 'http://localhost:8787',
         changeOrigin: true,
       },
+      // public Kaspi price-list feed
+      '/feed': {
+        target: 'http://localhost:8787',
+        changeOrigin: true,
+      },
       '/kaspi': {
         target: 'https://kaspi.kz',
         changeOrigin: true,

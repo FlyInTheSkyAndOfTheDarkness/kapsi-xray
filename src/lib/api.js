@@ -25,6 +25,19 @@ export async function api(path, { method = 'GET', body, auth = true } = {}) {
   return data
 }
 
+export async function apiText(path, { method = 'GET', auth = true } = {}) {
+  const headers = {}
+  const token = getToken()
+  if (auth && token) headers.Authorization = 'Bearer ' + token
+  const res = await fetch('/api' + path, { method, headers })
+  if (!res.ok) {
+    const err = new Error(`HTTP ${res.status}`)
+    err.status = res.status
+    throw err
+  }
+  return res.text()
+}
+
 export async function apiBlob(path, { method = 'GET', body, auth = true } = {}) {
   const headers = {}
   const token = getToken()
@@ -95,6 +108,13 @@ export const API = {
   deleteTaobaoPreorder: (id) => api(`/taobao/preorders/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   refreshTaobaoPreorders: (ids) => api('/taobao/preorders/refresh', { method: 'POST', body: ids ? { ids } : {} }),
   retryTaobaoPreorder: (id, body = {}) => api(`/taobao/preorders/${encodeURIComponent(id)}/retry`, { method: 'POST', body }),
+  unlockPreorderCard: (id) => api(`/taobao/preorders/${encodeURIComponent(id)}/unlock-card`, { method: 'POST' }),
+  kaspiFeed: (storeId) => api(`/feeds/${encodeURIComponent(storeId)}`),
+  saveKaspiFeed: (storeId, body = {}) => api(`/feeds/${encodeURIComponent(storeId)}`, { method: 'PUT', body }),
+  rotateKaspiFeed: (storeId) => api(`/feeds/${encodeURIComponent(storeId)}/rotate`, { method: 'POST' }),
+  checkKaspiFeed: (storeId) => api(`/feeds/${encodeURIComponent(storeId)}/selfcheck`, { method: 'POST' }),
+  kaspiFeedXml: (storeId) => apiText(`/feeds/${encodeURIComponent(storeId)}/xml`),
+
   taobaoProduct: (id) => api(`/taobao/${encodeURIComponent(id)}`),
   importTaobao: (id, body = {}) => api(`/taobao/${id}/import`, { method: 'POST', body }),
   taobaoImagesZip: (id) => apiBlob(`/taobao/${id}/images.zip`),

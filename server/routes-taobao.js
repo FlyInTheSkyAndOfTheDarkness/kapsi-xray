@@ -6,7 +6,9 @@ import * as taobao from './taobao.js'
 import * as kaspi from './kaspi.js'
 import { makeZip } from './zip.js'
 import { removeUploadedImages, saveUploadedImage } from './uploads.js'
-import { applyPreorder, canonicalTaobaoUrl, isPlatformMetadata, normalizeImages, normalizePreorderDays, sanitizeDescription, sanitizeProductTitle } from './taobao-product.js'
+import { canonicalTaobaoUrl, isPlatformMetadata, mergeProduct, normalizeImages, normalizePreorderDays, sanitizeDescription, sanitizeProductTitle } from './taobao-product.js'
+import { publicBaseUrl } from './base-url.js'
+import { feedContextForStore } from './routes-feed.js'
 
 export const taobaoRouter = Router()
 
@@ -58,44 +60,7 @@ function bookmarkletUrls(req) {
   }
 }
 
-function mergeProduct(saved, bodyProduct = {}) {
-  const draft = saved.product?.draft || {}
-  const fallbackPrice = saved.product?.priceKzt || draft.salePrice || draft.price || 0
-  const product = {
-    ...draft,
-    ...bodyProduct,
-    attributes: Array.isArray(bodyProduct.attributes) ? bodyProduct.attributes : draft.attributes || [],
-    images: normalizeImages(Array.isArray(bodyProduct.images) ? bodyProduct.images : draft.images || []),
-  }
-  product.sku = String(product.sku || '').trim()
-  product.title = sanitizeProductTitle(product.title)
-  product.brand = String(product.brand || '').trim()
-  product.category = String(product.category || '').trim()
-  product.description = sanitizeDescription(product.description)
-  const salePrice = Math.max(0, Math.round(Number(product.salePrice ?? product.price ?? fallbackPrice) || 0))
-  product.price = salePrice
-  product.salePrice = salePrice
-  product.stock = product.stock === '' || product.stock == null ? null : Math.max(0, Number(product.stock) || 0)
-  product.quantity = product.stock == null ? product.quantity : product.stock
-  const warehouses = Array.isArray(product.warehouses)
-    ? product.warehouses
-    : String(product.warehouses || '').split(/[,\n;]/).map((x) => x.trim()).filter(Boolean)
-  product.warehouses = [...new Set(warehouses)].slice(0, 12)
-  product.availabilities = product.warehouses.length && product.stock != null
-    ? product.warehouses.map((storeId) => ({ storeId, available: product.stock > 0, stockCount: product.stock }))
-    : []
-  return applyPreorder(product)
-}
-
-function publicBaseUrl(req) {
-  if (process.env.PUBLIC_BASE_URL) return String(process.env.PUBLIC_BASE_URL).replace(/\/$/, '')
-  const protocol = req.get('x-forwarded-proto') || req.protocol
-  const host = req.get('x-forwarded-host') || req.get('host')
-  return `${protocol}://${host}`
-}
-
-function productForKaspi(req, product) {
-  const base = publicBaseUrl(req)
+function productForKaspi(base, product) {
   const images = normalizeImages(product.images).map((image) => ({
     url: image.url.startsWith('/') ? `${base}${image.url}` : image.url,
   }))
@@ -302,13 +267,43 @@ function importView(row) {
   }
 }
 
-function preorderView(productRow, importRow, attempts, userId) {
+/* Kaspi needs an hour to pull the feed, then puts unknown SKUs into
+   «Нераспознанные товары → Без привязки». Only after that silence is it fair to tell
+   the seller their товар is waiting to be linked by hand. */
+const AWAITING_LINK_GRACE_MS = 2 * 60 * 60 * 1000
+
+/**
+ * Where the product actually is on the way to the shelf. The import state alone
+ * only describes the card; the price list and the manual linking step are what
+ * decide whether a buyer can order it.
+ */
+function preorderStage(productRow, importState, feedEntry, feed, onSale) {
+  if (onSale) return 'on_sale'
+  if (importState === 'rejected') return 'blocked'
+  if (!feedEntry) return importState === 'draft' ? 'draft' : 'card_sent'
+  if (!feedEntry.included) return 'blocked'
+  const pulledAfterCreate = feed?.lastFetchAt && feed.lastFetchAt - (productRow.createdAt || 0) > AWAITING_LINK_GRACE_MS
+  return pulledAfterCreate ? 'awaiting_link' : 'in_feed'
+}
+
+function preorderView(productRow, importRow, attempts, userId, feedContext = null) {
   const importedProduct = importRow?.products?.[0] || productRow.product?.draft || {}
   const parsed = productRow.product || {}
   const linkedStoreId = importRow?.storeId || productRow.preferredStoreId
   const store = linkedStoreId && find('stores', (row) => row.id === linkedStoreId && row.userId === userId)
   const firstImage = importedProduct.images?.[0]?.url || importedProduct.images?.[0] || parsed.images?.[0] || null
+  const view = importView(importRow)
+  const feedEntry = feedContext?.byProduct?.get(productRow.id) || null
+  const stage = preorderStage(productRow, view?.state || 'draft', feedEntry, feedContext?.feed, view?.state === 'published')
   return {
+    stage,
+    cardLocked: cardLocked(userId, productRow),
+    feed: {
+      included: !!feedEntry?.included,
+      issues: feedEntry?.issues || [],
+      warehouses: feedEntry?.warehouses || [],
+      lastFetchAt: feedContext?.feed?.lastFetchAt || null,
+    },
     id: productRow.id,
     title: importedProduct.title || parsed.titleRu || parsed.title || importedProduct.sku || 'Товар Taobao',
     sku: importedProduct.sku || '',
@@ -317,8 +312,9 @@ function preorderView(productRow, importRow, attempts, userId) {
     sourceUrl: parsed.sourceUrl || parsed.finalUrl || null,
     deliveryDays: normalizePreorderDays(importedProduct.deliveryDays),
     stock: importedProduct.stock ?? importedProduct.quantity ?? null,
+    feedEnabled: importedProduct.feedEnabled !== false,
     store: store ? { id: store.id, name: store.name, merchantId: store.merchantId, hasToken: !!store.token } : null,
-    import: importView(importRow) || {
+    import: view || {
       id: null,
       code: null,
       state: 'draft',
@@ -335,10 +331,25 @@ function preorderView(productRow, importRow, attempts, userId) {
   }
 }
 
+/** Feed state of every store once, so a list of N products stays a single pass. */
+function feedContexts(userId) {
+  const contexts = new Map()
+  filter('stores', (row) => row.userId === userId).forEach((store) => {
+    const context = feedContextForStore(userId, store.id)
+    if (context) contexts.set(store.id, context)
+  })
+  return contexts
+}
+
+function contextFor(contexts, productRow, importRow) {
+  return contexts.get(importRow?.storeId || productRow.preferredStoreId) || null
+}
+
 function listPreorders(userId) {
   const rows = filter('taobaoProducts', (row) => row.userId === userId)
   const imports = filter('imports', (row) => row.userId === userId && row.taobaoProductId)
   const latest = latestTaobaoImports(userId)
+  const contexts = feedContexts(userId)
   const attemptCounts = imports.reduce((acc, row) => {
     acc[row.taobaoProductId] = (acc[row.taobaoProductId] || 0) + 1
     return acc
@@ -356,7 +367,7 @@ function listPreorders(userId) {
       seen.add(identity)
       return true
     })
-    .map((row) => preorderView(row, latest.get(row.id), attemptCounts[row.id] || 0, userId))
+    .map((row) => preorderView(row, latest.get(row.id), attemptCounts[row.id] || 0, userId, contextFor(contexts, row, latest.get(row.id))))
     .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))
 }
 
@@ -366,8 +377,9 @@ function preorderDetail(productRow, userId) {
   const latest = imports[0] || null
   const fallback = latest?.products?.[0] || {}
   const product = mergeProduct(productRow, productRow.product?.draft || fallback)
+  const storeId = latest?.storeId || productRow.preferredStoreId
   return {
-    ...preorderView(productRow, latest, imports.length, userId),
+    ...preorderView(productRow, latest, imports.length, userId, storeId ? feedContextForStore(userId, storeId) : null),
     product,
     storeId: latest?.storeId || productRow.preferredStoreId || null,
     source: {
@@ -415,16 +427,36 @@ function missingRequiredFields(product = {}) {
     .concat(Number(product.salePrice ?? product.price) > 0 ? [] : ['price'])
 }
 
-async function publishTaobaoProduct(req, res, { productRow, storeId, sourceProduct }) {
-  const store = find('stores', (row) => row.id === storeId && row.userId === req.user.id)
-  if (!store) return res.status(404).json({ error: 'store_not_found' })
-  if (!store.token) return res.status(400).json({ error: 'no_token' })
+/**
+ * Kaspi: «не редактируйте карточку товара, иначе покупатели не смогут оформить на него
+ * предзаказ. Используйте для этого прайс-лист». So a card goes out exactly once; after
+ * that price, stock and lead time may only change through the feed. Re-sending is possible
+ * only after an explicit unlock, which the seller confirms knowing the pre-order resets.
+ */
+export function cardLocked(userId, productRow) {
+  const published = importsForProduct(userId, productRow.id).filter((row) => row.code)
+  if (!published.length) return false
+  const lastPublishedAt = Math.max(...published.map((row) => row.createdAt || 0))
+  return (productRow.cardUnlockedAt || 0) <= lastPublishedAt
+}
+
+/**
+ * Send the product card to Kaspi. Price, stock and pre-order days are not part
+ * of this call — they reach Kaspi through the price-list feed (kaspi-feed.js),
+ * which matches this card by SKU.
+ * Shared by the HTTP routes and the auto-publish scheduler.
+ */
+export async function publishPreorderCard({ userId, productRow, storeId, sourceProduct, baseUrl }) {
+  const store = find('stores', (row) => row.id === storeId && row.userId === userId)
+  if (!store) return { ok: false, error: 'store_not_found', status: 404 }
+  if (!store.token) return { ok: false, error: 'no_token', status: 400 }
+  if (cardLocked(userId, productRow)) return { ok: false, error: 'card_locked', status: 409 }
 
   const product = mergeProduct(productRow, sourceProduct || {})
   const missing = missingRequiredFields(product)
-  if (missing.length) return res.status(400).json({ error: 'missing_product_fields', missing, draft: product })
+  if (missing.length) return { ok: false, error: 'missing_product_fields', status: 400, missing, draft: product }
 
-  const attempt = importsForProduct(req.user.id, productRow.id).length + 1
+  const attempt = importsForProduct(userId, productRow.id).length + 1
   update('taobaoProducts', productRow.id, {
     product: { ...productRow.product, draft: product },
     preferredStoreId: store.id,
@@ -433,25 +465,49 @@ async function publishTaobaoProduct(req, res, { productRow, storeId, sourceProdu
   })
 
   try {
-    const result = await kaspi.merchantImportProducts(store.token, [productForKaspi(req, product)])
+    const result = await kaspi.merchantImportProducts(store.token, [productForKaspi(baseUrl, product)])
     const saved = insert('imports', {
-      id: uid(), userId: req.user.id, storeId: store.id, taobaoProductId: productRow.id,
+      id: uid(), userId, storeId: store.id, taobaoProductId: productRow.id,
       code: result?.code || null, status: result?.status || null, products: [product], attempt, createdAt: Date.now(),
     })
-    return res.json({ ok: true, preorder: preorderView(productRow, saved, attempt, req.user.id), import: saved, result })
+    return { ok: true, store, product, attempt, import: saved, result }
   } catch (error) {
     const failed = insert('imports', {
-      id: uid(), userId: req.user.id, storeId: store.id, taobaoProductId: productRow.id,
+      id: uid(), userId, storeId: store.id, taobaoProductId: productRow.id,
       code: null, status: 'FAILED', products: [product], attempt, localError: 'merchant_import_failed',
       errorDetails: error.data || { status: error.status || null }, createdAt: Date.now(), checkedAt: Date.now(),
     })
-    return res.status(error.status === 401 ? 401 : 502).json({
+    return {
+      ok: false,
       error: 'merchant_import_failed',
-      attempt: importView(failed),
-      status: error.status || null,
+      status: error.status === 401 ? 401 : 502,
+      kaspiStatus: error.status || null,
       details: error.data || null,
+      attempt: importView(failed),
+    }
+  }
+}
+
+async function publishTaobaoProduct(req, res, { productRow, storeId, sourceProduct }) {
+  const result = await publishPreorderCard({
+    userId: req.user.id,
+    productRow,
+    storeId,
+    sourceProduct,
+    baseUrl: publicBaseUrl(req),
+  })
+  if (result.ok) {
+    return res.json({
+      ok: true,
+      preorder: preorderView(productRow, result.import, result.attempt, req.user.id, feedContextForStore(req.user.id, storeId)),
+      import: result.import,
+      result: result.result,
     })
   }
+  const body = { error: result.error }
+  if (result.missing) Object.assign(body, { missing: result.missing, draft: result.draft })
+  if (result.error === 'merchant_import_failed') Object.assign(body, { attempt: result.attempt, status: result.kaspiStatus, details: result.details })
+  return res.status(result.status).json(body)
 }
 
 function bookmarklet(key, { endpoint, appUrl, appOrigin } = bookmarkletUrls({ get: () => null })) {
@@ -593,12 +649,37 @@ taobaoRouter.post('/preorders/:id/retry', async (req, res) => {
     .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0))
   const previous = attempts[0]
   if (!previous) return res.status(400).json({ error: 'no_previous_import' })
+
+  // The card is already live: re-sending it would drop the pre-order. Save the draft
+  // instead — Kaspi picks the new price and stock up from the feed within the hour.
+  if (cardLocked(req.user.id, productRow)) {
+    const product = mergeProduct(productRow, req.body?.product || previous.products?.[0] || {})
+    update('taobaoProducts', productRow.id, {
+      product: { ...productRow.product, draft: product },
+      draftEditedAt: Date.now(),
+      updatedAt: Date.now(),
+    })
+    return res.json({ ok: true, via: 'feed', preorder: preorderDetail(productRow, req.user.id) })
+  }
+
   const storeId = req.body?.storeId || previous.storeId
   return publishTaobaoProduct(req, res, {
     productRow,
     storeId,
     sourceProduct: req.body?.product || previous.products?.[0] || {},
   })
+})
+
+/**
+ * POST /api/taobao/preorders/:id/unlock-card — allow one more card publication.
+ * Kaspi resets the pre-order when a card is edited, so this is deliberate and one-shot:
+ * the lock re-engages as soon as the next card actually goes out.
+ */
+taobaoRouter.post('/preorders/:id/unlock-card', (req, res) => {
+  const productRow = find('taobaoProducts', (row) => row.id === req.params.id && row.userId === req.user.id)
+  if (!productRow) return res.status(404).json({ error: 'not_found' })
+  update('taobaoProducts', productRow.id, { cardUnlockedAt: Date.now(), updatedAt: Date.now() })
+  res.json({ ok: true, preorder: preorderDetail(productRow, req.user.id) })
 })
 
 /** GET /api/taobao/:id — load a parsed product. */

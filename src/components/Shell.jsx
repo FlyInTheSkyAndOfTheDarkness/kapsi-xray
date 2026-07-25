@@ -108,6 +108,7 @@ const NAV = [
     items: [
       { to: '/calculator', key: 'calc', icon: 'percent' },
       { to: '/taobao', key: 'taobao', icon: 'shopping_bag' },
+      { to: '/taobao/feed', key: 'feed', icon: 'rss_feed' },
       { to: '/admin', key: 'admin', icon: 'admin_panel_settings', adminOnly: true },
       { to: '/settings', key: 'settings', icon: 'tune' },
     ],

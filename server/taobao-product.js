@@ -1,8 +1,16 @@
+import { clampPreorderDays, kaspiSku, sanitizeStoreIds } from './kaspi-feed.js'
+
 export const DEFAULT_PREORDER_DAYS = 14
 
+/* Kaspi: «Напишите "Без бренда", если для продажи товара не нужно получать разрешение
+   на торговлю». Товары с Taobao/1688 обычно безбрендовые, а пустой <brand> Kaspi
+   не принимает, поэтому подставляем это значение вместо пустого. */
+export const NO_BRAND = 'Без бренда'
+
+/** Kaspi caps pre-orders at 30 days, so drafts are clamped at the source. */
 export function normalizePreorderDays(value) {
   const days = Number(value)
-  return Number.isFinite(days) && days > 0 ? Math.round(days) : DEFAULT_PREORDER_DAYS
+  return Number.isFinite(days) && days > 0 ? clampPreorderDays(days) : DEFAULT_PREORDER_DAYS
 }
 
 function attributeName(attribute = {}) {
@@ -27,6 +35,7 @@ export function sanitizeProductTitle(value) {
   return String(value || '')
     .replace(/\s+(?:[-–—|]\s*)?(?:table-)?tmall\.com(?:\s+tmall)?\s*$/i, '')
     .replace(/\s+[-–—|]\s*(?:taobao|tmall)\s*$/i, '')
+    .replace(/\s*[-–—|]\s*(?:1688\.com|阿里巴巴)\s*$/i, '')
     .replace(/\s+/g, ' ')
     .trim()
 }
@@ -125,4 +134,36 @@ export function applyPreorder(product = {}) {
   attributes = upsertAttribute(attributes, 'Предзаказ', 'Да')
   attributes = upsertAttribute(attributes, 'Срок доставки предзаказа', `${days} дней`, ['Срок доставки'])
   return { ...product, ...preorderFields(days), attributes }
+}
+
+/**
+ * The single Kaspi draft of a saved Taobao/1688 product: what the card import
+ * sends and what the price-list feed publishes must come from here, otherwise
+ * Kaspi cannot match the offer to the card by SKU.
+ */
+export function mergeProduct(saved = {}, bodyProduct = {}) {
+  const draft = saved.product?.draft || {}
+  const fallbackPrice = saved.product?.priceKzt || draft.salePrice || draft.price || 0
+  const product = {
+    ...draft,
+    ...bodyProduct,
+    attributes: Array.isArray(bodyProduct.attributes) ? bodyProduct.attributes : draft.attributes || [],
+    images: normalizeImages(Array.isArray(bodyProduct.images) ? bodyProduct.images : draft.images || []),
+  }
+  product.sku = kaspiSku(product.sku, saved.id || saved.product?.productId || product.title)
+  product.title = sanitizeProductTitle(product.title)
+  product.brand = String(product.brand || '').trim() || NO_BRAND
+  product.category = String(product.category || '').trim()
+  product.description = sanitizeDescription(product.description)
+  const salePrice = Math.max(0, Math.round(Number(product.salePrice ?? product.price ?? fallbackPrice) || 0))
+  product.price = salePrice
+  product.salePrice = salePrice
+  product.stock = product.stock === '' || product.stock == null ? null : Math.max(0, Number(product.stock) || 0)
+  product.quantity = product.stock == null ? product.quantity : product.stock
+  product.warehouses = sanitizeStoreIds(product.warehouses)
+  product.feedEnabled = product.feedEnabled !== false
+  product.availabilities = product.warehouses.length && product.stock != null
+    ? product.warehouses.map((storeId) => ({ storeId, available: product.stock > 0, stockCount: product.stock }))
+    : []
+  return applyPreorder(product)
 }

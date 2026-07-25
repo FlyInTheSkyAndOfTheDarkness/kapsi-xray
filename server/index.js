@@ -10,6 +10,7 @@ import { alertsRouter } from './routes-alerts.js'
 import { taobaoRouter } from './routes-taobao.js'
 import { aiRouter } from './routes-ai.js'
 import { adminRouter } from './routes-admin.js'
+import { feedRouter, publicFeedRouter } from './routes-feed.js'
 import { startScheduler } from './scheduler.js'
 import { requireAuth } from './auth.js'
 import { find, update } from './db.js'
@@ -22,11 +23,18 @@ app.use(express.json({ limit: '12mb' }))
 app.use('/uploads', express.static(UPLOAD_DIR))
 
 app.get('/api/health', (req, res) => res.json({ ok: true, ts: Date.now() }))
+
+/* Kaspi downloads the price list here — public on purpose, guarded by the
+   secret token in the path plus optional Basic auth. Must stay above the
+   SPA catch-all so it is never answered with index.html. */
+app.use('/feed', publicFeedRouter)
+
 app.use('/api/auth', authRouter)
 app.use('/api/stores', storesRouter)
 app.use('/api/competitors', competitorsRouter)
 app.use('/api/alerts', alertsRouter)
 app.use('/api/taobao', taobaoRouter)
+app.use('/api/feeds', feedRouter)
 app.use('/api/ai', aiRouter)
 app.use('/api/admin', adminRouter)
 
@@ -79,7 +87,9 @@ if (existsSync(dist)) {
 }
 
 const PORT = process.env.PORT || 8787
-app.listen(PORT, () => {
+export const server = app.listen(PORT, () => {
   console.log(`Kaspi X-Ray backend on http://localhost:${PORT}`)
-  startScheduler()
+  // Tests boot the same app but must not start background timers.
+  if (process.env.KX_NO_SCHEDULER !== '1') startScheduler()
 })
+export { app }

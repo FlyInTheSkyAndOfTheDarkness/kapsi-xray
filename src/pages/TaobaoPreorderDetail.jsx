@@ -14,6 +14,15 @@ const STATUS_META = {
   rejected: { icon: 'error', tone: 'neg' },
 }
 
+const STAGE_META = {
+  draft: { icon: 'edit_note', tone: 'brand' },
+  card_sent: { icon: 'hourglass_top', tone: 'warn' },
+  in_feed: { icon: 'rss_feed', tone: 'warn' },
+  awaiting_link: { icon: 'link_off', tone: 'neg' },
+  on_sale: { icon: 'check_circle', tone: 'pos' },
+  blocked: { icon: 'error', tone: 'neg' },
+}
+
 function fileData(file) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader()
@@ -26,6 +35,7 @@ function fileData(file) {
 function cleanProduct(product = {}) {
   return {
     ...product,
+    feedEnabled: product.feedEnabled !== false,
     attributes: Array.isArray(product.attributes) ? product.attributes.map((item) => ({ code: item.code || '', value: item.value ?? '' })) : [],
     images: Array.isArray(product.images) ? product.images.map((item) => ({ url: typeof item === 'string' ? item : item?.url || '' })).filter((item) => item.url) : [],
     warehouses: Array.isArray(product.warehouses) ? product.warehouses.join(', ') : product.warehouses || '',
@@ -59,6 +69,7 @@ export default function TaobaoPreorderDetail() {
   const [publishing, setPublishing] = useState(false)
   const [uploading, setUploading] = useState(false)
   const [deleting, setDeleting] = useState(false)
+  const [unlocking, setUnlocking] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [message, setMessage] = useState('')
   const [error, setError] = useState('')
@@ -131,7 +142,8 @@ export default function TaobaoPreorderDetail() {
 
   const selectedStore = stores.find((store) => store.id === storeId) || null
   const status = data?.import?.state || 'draft'
-  const statusMeta = STATUS_META[status] || STATUS_META.processing
+  const stage = data?.stage || 'draft'
+  const statusMeta = STAGE_META[stage] || STATUS_META.processing
   const images = draft?.images || []
   const attrs = draft?.attributes || []
   const localPhotos = useMemo(() => images.some((image) => image.url.startsWith('/uploads/')), [images])
@@ -180,7 +192,8 @@ export default function TaobaoPreorderDetail() {
 
   const payload = () => ({
     ...draft,
-    deliveryDays: Math.max(1, Math.round(Number(draft.deliveryDays) || 14)),
+    feedEnabled: draft.feedEnabled !== false,
+    deliveryDays: Math.min(30, Math.max(1, Math.round(Number(draft.deliveryDays) || 14))),
     price: Math.max(0, Math.round(Number(draft.salePrice ?? draft.price) || 0)),
     salePrice: Math.max(0, Math.round(Number(draft.salePrice ?? draft.price) || 0)),
     stock: Math.max(0, Math.round(Number(draft.stock) || 0)),
@@ -380,6 +393,21 @@ export default function TaobaoPreorderDetail() {
     }
   }
 
+  const unlockCard = async () => {
+    if (!window.confirm(t('preorder_detail.unlock_confirm'))) return
+    setUnlocking(true)
+    setError('')
+    try {
+      const result = await API.unlockPreorderCard(id)
+      setData(result.preorder)
+      setMessage(t('preorder_detail.unlocked'))
+    } catch {
+      setError(t('preorder_detail.save_error'))
+    } finally {
+      setUnlocking(false)
+    }
+  }
+
   const deleteProduct = async () => {
     setDeleting(true)
     setError('')
@@ -408,15 +436,17 @@ export default function TaobaoPreorderDetail() {
       <button className="btn btn-ghost" onClick={goBack}><span className="msym">arrow_back</span>{t('preorder_detail.back')}</button>
     </div>
   )
-  const statusText = data.import?.reason || (
-    status === 'published'
-      ? t('preorders.published_note')
-      : status === 'verifying'
-        ? t('preorders.verifying_note')
-        : status === 'draft'
-          ? t('preorders.draft_note')
-          : t('preorders.processing_note')
-  )
+  const statusText = stage === 'awaiting_link'
+    ? t('preorders.awaiting_link_how')
+    : data.import?.reason || (
+      stage === 'on_sale'
+        ? t('preorders.published_note')
+        : stage === 'in_feed'
+          ? t('preorders.in_feed_note')
+          : stage === 'draft'
+            ? t('preorders.draft_note')
+            : t('preorders.processing_note')
+    )
 
   return (
     <div className="fade-in preorder-detail">
@@ -429,7 +459,7 @@ export default function TaobaoPreorderDetail() {
       <div className={`preorder-detail-status ${statusMeta.tone}`}>
         <span className="msym">{statusMeta.icon}</span>
         <div>
-          <b>{t(`preorders.status_${status}`)}</b>
+          <b>{t(`preorders.stage_${stage}`)}</b>
           <span>{statusText}</span>
         </div>
         <div className="preorder-status-actions">
@@ -474,15 +504,33 @@ export default function TaobaoPreorderDetail() {
             <label><span className="field-label">{t('preorders.store')}</span><select className="select" value={storeId} onChange={(event) => { setStoreId(event.target.value); setDirty(true); setMessage('') }}><option value="">{t('taobao.pick_store')}</option>{stores.map((store) => <option key={store.id} value={store.id}>{store.name}</option>)}</select></label>
             <div className="preorder-form-grid">
               <label><span className="field-label">{t('products.sale_price')}</span><input className="input mono" type="number" min="1" value={draft.salePrice ?? draft.price ?? 0} onChange={(event) => setField('salePrice', event.target.value)} /></label>
-              <label><span className="field-label">{t('taobao.delivery_days')}</span><input className="input mono" type="number" min="1" value={draft.deliveryDays ?? 14} onChange={(event) => setField('deliveryDays', event.target.value)} /></label>
+              <label><span className="field-label">{t('taobao.delivery_days')}</span><input className="input mono" type="number" min="1" max="30" value={draft.deliveryDays ?? 14} onChange={(event) => setField('deliveryDays', event.target.value)} /></label>
               <label><span className="field-label">{t('common.stock')}</span><input className="input mono" type="number" min="0" value={draft.stock ?? 0} onChange={(event) => setField('stock', event.target.value)} /></label>
               <div className="preorder-price-hint"><span className="msym">payments</span>{tenge(draft.salePrice ?? draft.price ?? 0)}</div>
               <label className="span-2"><span className="field-label">{t('taobao.warehouses')}</span><input className="input" value={draft.warehouses || ''} onChange={(event) => setField('warehouses', event.target.value)} placeholder={t('taobao.warehouses_ph')} /></label>
             </div>
+            <label className="feed-toggle">
+              <input type="checkbox" checked={draft.feedEnabled !== false} onChange={(event) => setField('feedEnabled', event.target.checked)} />
+              <span><b>{t('preorder_detail.feed_enabled')}</b>{t('preorder_detail.feed_enabled_hint')}</span>
+            </label>
+            <a className="preorder-feed-link" href="/taobao/feed" onClick={(event) => { event.preventDefault(); navigate('/taobao/feed') }}>
+              <span className="msym">rss_feed</span>{t('preorder_detail.open_feed')}
+            </a>
             {!selectedStore?.hasToken && <div className="mini-note"><span className="msym">key_off</span>{t('taobao.err_no_token')}</div>}
             {!!missingFields.length && <div className="mini-note warn"><span className="msym">error</span>{t('taobao.err_fields')}</div>}
             {localPhotos && <div className="mini-note warn"><span className="msym">cloud_off</span>{t('preorder_detail.local_photo_note')}</div>}
-            <button className="btn btn-primary preorder-publish-button" onClick={publish} disabled={publishing || saving || !selectedStore?.hasToken || !!missingFields.length}><span className={`msym ${publishing ? 'spin' : ''}`}>{publishing ? 'progress_activity' : 'publish'}</span>{t(status === 'draft' ? 'preorder_detail.publish_first' : 'preorder_detail.publish')}</button>
+            {data.cardLocked ? (
+              <div className="preorder-card-lock">
+                <div><span className="msym">lock</span><b>{t('preorder_detail.card_locked')}</b></div>
+                <p>{t('preorder_detail.card_locked_note')}</p>
+                <button className="btn btn-ghost btn-sm danger" onClick={unlockCard} disabled={unlocking}>
+                  <span className={`msym ${unlocking ? 'spin' : ''}`}>{unlocking ? 'progress_activity' : 'lock_open'}</span>
+                  {t('preorder_detail.unlock_card')}
+                </button>
+              </div>
+            ) : (
+              <button className="btn btn-primary preorder-publish-button" onClick={publish} disabled={publishing || saving || !selectedStore?.hasToken || !!missingFields.length}><span className={`msym ${publishing ? 'spin' : ''}`}>{publishing ? 'progress_activity' : 'publish'}</span>{t(status === 'draft' ? 'preorder_detail.publish_first' : 'preorder_detail.publish')}</button>
+            )}
           </div>
         </Card>
       </div>

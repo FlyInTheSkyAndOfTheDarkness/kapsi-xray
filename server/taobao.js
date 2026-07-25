@@ -1,4 +1,5 @@
 import { canonicalTaobaoUrl, isPlatformMetadata, preorderDraftDefaults, sanitizeProductTitle } from './taobao-product.js'
+import { kaspiSku } from './kaspi-feed.js'
 
 const UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36'
 const CNY_RATE_FALLBACK = 72
@@ -91,7 +92,13 @@ function cleanText(s = '') {
   return stripTags(s).replace(/[\u0000-\u001f]+/g, ' ').replace(/\s+/g, ' ').trim()
 }
 
-function safeTaobaoUrl(input) {
+const SOURCE_DOMAINS = {
+  taobao: ['taobao.com', 'tmall.com', 'tmall.hk', 'm.tb.cn', 'tb.cn'],
+  '1688': ['1688.com'],
+}
+
+/** Marketplace this URL belongs to, or null when it is not one we support. */
+export function sourceOfUrl(input) {
   let url
   try {
     url = new URL(String(input || '').trim())
@@ -100,9 +107,11 @@ function safeTaobaoUrl(input) {
   }
   if (!['http:', 'https:'].includes(url.protocol)) return null
   const host = url.hostname.toLowerCase()
-  const ok = ['taobao.com', 'tmall.com', 'tmall.hk', 'm.tb.cn', 'tb.cn'].some((d) => host === d || host.endsWith(`.${d}`))
-  return ok ? url.toString() : null
+  const entry = Object.entries(SOURCE_DOMAINS)
+    .find(([, domains]) => domains.some((domain) => host === domain || host.endsWith(`.${domain}`)))
+  return entry ? { source: entry[0], url: url.toString() } : null
 }
+
 
 async function fetchWithTimeout(url, opts = {}, timeoutMs = 18000) {
   const ctrl = new AbortController()
@@ -156,7 +165,12 @@ export async function translateZh(text) {
 function extractId(url) {
   try {
     const u = new URL(url)
-    return u.searchParams.get('id') || u.searchParams.get('itemId') || (url.match(/(?:id=|itemId=)(\d{6,})/) || [])[1] || ''
+    return u.searchParams.get('id')
+      || u.searchParams.get('itemId')
+      // 1688 keeps the offer id in the path: /offer/123456789.html
+      || (u.pathname.match(/\/offer\/(\d{6,})/) || [])[1]
+      || (url.match(/(?:id=|itemId=)(\d{6,})/) || [])[1]
+      || ''
   } catch {
     return ''
   }
@@ -180,6 +194,10 @@ function extractPrice(html) {
     /"salePrice"\s*:\s*"¥?\s*([\d.]+)\s*"/i,
     /"reservePrice"\s*:\s*"¥?\s*([\d.]+)\s*"/i,
     /"priceRange"\s*:\s*"¥?\s*([\d.]+)/i,
+    // 1688 offer pages
+    /"beginAmount"\s*:\s*"?([\d.]+)/i,
+    /"discountPrice"\s*:\s*"?¥?\s*([\d.]+)/i,
+    /"currentPrices?"\s*:\s*"?¥?\s*([\d.]+)/i,
   ]
   for (const p of patterns) {
     const n = Number((html.match(p) || [])[1])
@@ -208,7 +226,8 @@ function extractImages(html) {
   const og = html.match(/<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']+)/i)?.[1]
   const ogUrl = normalizeImageUrl(og)
   if (ogUrl) out.add(ogUrl)
-  const re = /(?:https?:)?\/\/(?:img|gw|g|gd|imgextra)\.alicdn\.com\/[^"'\\<>\s]+?\.(?:jpg|jpeg|png|webp)/ig
+  // img/gw/imgextra serve Taobao & Tmall, cbu01…cbu04 serve 1688.
+  const re = /(?:https?:)?\/\/[a-z0-9-]+\.alicdn\.com\/[^"'\\<>\s]+?\.(?:jpg|jpeg|png|webp)/ig
   for (const m of html.matchAll(re)) {
     const u = normalizeImageUrl(m[0])
     if (u) out.add(u)
@@ -250,18 +269,26 @@ function extractSpecs(html) {
   return [...map.entries()].slice(0, 32).map(([key, value]) => ({ key, value }))
 }
 
+const SKU_PREFIX = { taobao: 'TB', '1688': 'AL' }
+
+/** Price-list safe SKU: latin letters and digits only, max 20 characters. */
+function draftSku(source, productId) {
+  return kaspiSku(`${SKU_PREFIX[source] || 'TB'}${productId || Date.now()}`)
+}
+
 function looksBlocked(url, html) {
   const s = `${url}\n${html.slice(0, 6000)}`
   return /login|captcha|验证码|滑块|访问受限|安全验证|punish|verify/i.test(s) && !/"price"|"title"|og:title/i.test(s)
 }
 
 export async function parseTaobao(input, { shippingCny = 0, markupPct = 0, rate: manualRate } = {}) {
-  const url = safeTaobaoUrl(input)
-  if (!url) {
+  const detected = sourceOfUrl(input)
+  if (!detected) {
     const e = new Error('BAD_TAOBAO_URL')
     e.code = 'bad_url'
     throw e
   }
+  const { url, source } = detected
   const res = await fetchWithTimeout(url, {
     redirect: 'follow',
     headers: {
@@ -305,7 +332,7 @@ export async function parseTaobao(input, { shippingCny = 0, markupPct = 0, rate:
     `Источник: ${canonicalTaobaoUrl(finalUrl)}`,
   ].join('\n')
   return {
-    source: 'taobao',
+    source,
     sourceUrl: canonicalTaobaoUrl(url),
     finalUrl: canonicalTaobaoUrl(finalUrl),
     productId,
@@ -319,7 +346,7 @@ export async function parseTaobao(input, { shippingCny = 0, markupPct = 0, rate:
     specs,
     images,
     draft: {
-      sku: productId ? `TB-${productId}` : `TB-${Date.now()}`,
+      sku: draftSku(source, productId),
       title: titleRu || title,
       brand,
       category: '',
@@ -334,12 +361,13 @@ export async function parseTaobao(input, { shippingCny = 0, markupPct = 0, rate:
 }
 
 export async function productFromBrowserPayload(payload = {}, { shippingCny = 0, markupPct = 0, rate: manualRate } = {}) {
-  const url = safeTaobaoUrl(payload.sourceUrl || payload.url)
-  if (!url) {
+  const detected = sourceOfUrl(payload.sourceUrl || payload.url)
+  if (!detected) {
     const e = new Error('BAD_TAOBAO_URL')
     e.code = 'bad_url'
     throw e
   }
+  const { url, source } = detected
   const title = cleanText(payload.title || '')
   const specsRaw = Array.isArray(payload.specs)
     ? payload.specs.map((s) => ({ key: cleanText(s.key), value: cleanText(s.value) })).filter((s) => s.key && s.value && !isPlatformMetadata(s.key, s.value))
@@ -369,7 +397,7 @@ export async function productFromBrowserPayload(payload = {}, { shippingCny = 0,
     `Источник: ${canonicalTaobaoUrl(url)}`,
   ].join('\n')
   return {
-    source: 'taobao-browser',
+    source: `${source}-browser`,
     sourceUrl: canonicalTaobaoUrl(url),
     finalUrl: canonicalTaobaoUrl(url),
     productId,
@@ -383,7 +411,7 @@ export async function productFromBrowserPayload(payload = {}, { shippingCny = 0,
     specs,
     images,
     draft: {
-      sku: productId ? `TB-${productId}` : `TB-${Date.now()}`,
+      sku: draftSku(source, productId),
       title: titleRu || title,
       brand,
       category: '',

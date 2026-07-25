@@ -4,6 +4,7 @@ import { all, find, filter, insert, update, remove, uid } from './db.js'
 import * as kaspi from './kaspi.js'
 import { estimateCard, productProfit } from './analyze.js'
 import { buildImportPayload, publicRepricer, runRepricer, sanitizeWarehouses } from './repricer.js'
+import { preorderRowForSku, setPreorderPrice } from './preorder-link.js'
 
 export const storesRouter = Router()
 storesRouter.use(requireAuth)
@@ -294,6 +295,16 @@ storesRouter.post('/:id/products/:sku/publish', async (req, res) => {
   const sku = String(req.params.sku || req.body?.sku || '').trim()
   if (!sku) return res.status(400).json({ error: 'bad_sku' })
   const settings = upsertProductSettings(req.user.id, store.id, sku, productSettingsPatch(req.body?.settings || {}))
+
+  // Pre-order goods are driven by the price-list feed; re-sending their card would
+  // drop the pre-order, so the new price is stored and picked up by the feed instead.
+  const preorderRow = preorderRowForSku(req.user.id, store.id, sku)
+  if (preorderRow) {
+    const price = settings.salePrice ?? req.body?.product?.price
+    if (Number(price) > 0) setPreorderPrice(preorderRow, price)
+    return res.json({ ok: true, via: 'feed', preorderId: preorderRow.id, settings })
+  }
+
   const product = { ...(req.body?.product || {}), sku, id: sku }
   const payload = buildImportPayload(product, settings)
   if (!payload.sku || !payload.price) return res.status(400).json({ error: 'bad_product_payload', product: payload })

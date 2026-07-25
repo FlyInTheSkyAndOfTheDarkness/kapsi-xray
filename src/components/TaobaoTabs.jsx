@@ -14,6 +14,10 @@ export default function TaobaoTabs({ preorderCount }) {
         <span>{t('taobao.workspace_preorders')}</span>
         {preorderCount != null && <span className="workspace-tab-count mono">{preorderCount}</span>}
       </NavLink>
+      <NavLink to="/taobao/feed" className={({ isActive }) => (isActive ? 'active' : '')}>
+        <span className="msym">rss_feed</span>
+        <span>{t('taobao.workspace_feed')}</span>
+      </NavLink>
     </nav>
   )
 }
