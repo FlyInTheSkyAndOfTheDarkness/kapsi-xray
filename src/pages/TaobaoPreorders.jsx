@@ -73,6 +73,9 @@ export default function TaobaoPreorders() {
     return acc
   }, { draft: 0, processing: 0, verifying: 0, published: 0, rejected: 0 }), [rows])
 
+  // Kaspi pulled the price list but the product is still unlinked in the cabinet.
+  const awaitingLink = rows.filter((row) => row.stage === 'awaiting_link').length
+
   const visible = useMemo(() => {
     const query = search.trim().toLowerCase()
     return rows.filter((row) => {
@@ -116,6 +119,19 @@ export default function TaobaoPreorders() {
         </button>
       </PageHead>
       <TaobaoTabs preorderCount={rows.length} />
+
+      {awaitingLink > 0 && (
+        <div className="preorder-link-banner">
+          <span className="msym">link_off</span>
+          <div>
+            <b>{t('preorders.awaiting_link_title', { count: awaitingLink })}</b>
+            <span>{t('preorders.awaiting_link_how')}</span>
+          </div>
+          <a className="btn btn-primary btn-sm" href="https://kaspi.kz/mc/#/unrecognized" target="_blank" rel="noreferrer">
+            <span className="msym">open_in_new</span>{t('preorders.open_cabinet')}
+          </a>
+        </div>
+      )}
 
       <Card className="preorders-list" pad={false} title={t('preorders.list_title')} sub={t('preorders.list_sub')} aside={(
         <input className="input preorder-search" value={search} onChange={(e) => setSearch(e.target.value)} placeholder={t('preorders.search')} />

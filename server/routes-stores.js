@@ -6,6 +6,7 @@ import { estimateCard, productProfit } from './analyze.js'
 import { buildImportPayload, publicRepricer, runRepricer, sanitizeWarehouses } from './repricer.js'
 import { buildPreorderPriceListXml, ensurePriceListFeedKey, preorderPriceListSummary, storeByPreorderFeedKey } from './kaspi-price-list.js'
 import { loadClassificationAttributes } from './kaspi-classification.js'
+import { preorderRowForSku, setPreorderPrice } from './preorder-link.js'
 
 export const storesRouter = Router()
 
@@ -13,6 +14,14 @@ storesRouter.get('/preorder-feed/:key.xml', (req, res) => {
   const store = storeByPreorderFeedKey(String(req.params.key || '').trim())
   if (!store) return res.status(404).type('text/plain').send('feed_not_found')
   const feed = buildPreorderPriceListXml(store)
+  // The XSD requires at least one <offer>; an empty catalog would be a parse
+  // error on Kaspi's side, so say so in plain text instead.
+  if (!feed.offers.length) return res.status(409).type('text/plain').send('no_publishable_offers')
+  update('stores', store.id, {
+    priceListFetchedAt: Date.now(),
+    priceListFetchCount: (store.priceListFetchCount || 0) + 1,
+    priceListOfferCount: feed.offers.length,
+  })
   res.setHeader('content-type', 'application/xml; charset=utf-8')
   res.setHeader('cache-control', 'no-store')
   res.send(feed.xml)
@@ -386,6 +395,26 @@ storesRouter.get('/:id/preorder-feed', (req, res) => {
   res.json({ feed: preorderPriceListSummary(req, store) })
 })
 
+/**
+ * PUT /api/stores/:id/preorder-feed { warehouses: [{ id, available }] }
+ * The pickup-point map for the price list. Points switched off stay in the XML
+ * with available="no" — that is the only way Kaspi stops selling from them.
+ */
+storesRouter.put('/:id/preorder-feed', (req, res) => {
+  const store = find('stores', (s) => s.id === req.params.id && s.userId === req.user.id)
+  if (!store) return res.status(404).json({ error: 'not_found' })
+  const seen = new Set()
+  const warehouses = (Array.isArray(req.body?.warehouses) ? req.body.warehouses : [])
+    .map((item) => ({
+      id: String(item?.id ?? item ?? '').trim(),
+      available: typeof item === 'object' && item !== null ? item.available !== false : true,
+    }))
+    .filter((item) => item.id && !seen.has(item.id) && (seen.add(item.id), true))
+    .slice(0, 5)
+  update('stores', store.id, { priceListWarehouses: warehouses, updatedAt: Date.now() })
+  res.json({ feed: preorderPriceListSummary(req, find('stores', (s) => s.id === store.id)) })
+})
+
 /** GET /api/stores/:id — store + fresh catalog with estimates & profit (COGS). */
 storesRouter.get('/:id', async (req, res) => {
   let store = find('stores', (s) => s.id === req.params.id && s.userId === req.user.id)
@@ -440,6 +469,15 @@ storesRouter.post('/:id/products/:sku/publish', async (req, res) => {
   const sku = String(req.params.sku || req.body?.sku || '').trim()
   if (!sku) return res.status(400).json({ error: 'bad_sku' })
   const settings = upsertProductSettings(req.user.id, store.id, sku, productSettingsPatch(req.body?.settings || {}))
+  // Pre-order goods are driven by the price list; re-sending their card would
+  // drop the pre-order, so the new price is stored and the feed carries it.
+  const preorderRow = preorderRowForSku(req.user.id, store.id, sku)
+  if (preorderRow) {
+    const price = settings.salePrice ?? req.body?.product?.price
+    if (Number(price) > 0) setPreorderPrice(preorderRow, price)
+    return res.json({ ok: true, via: 'feed', preorderId: preorderRow.id, settings })
+  }
+
   const product = { ...(req.body?.product || {}), sku, id: sku }
   const payload = buildImportPayload(product, settings)
   if (!payload.sku || !payload.price) return res.status(400).json({ error: 'bad_product_payload', product: payload })

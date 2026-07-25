@@ -10,7 +10,9 @@ import { fileURLToPath } from 'node:url'
 import { randomUUID } from 'node:crypto'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
-const DATA_DIR = join(__dirname, 'data')
+/* KX_DATA_DIR lets tests (and alternative deploys) move the whole data directory,
+   so a test run never touches the real database. */
+export const DATA_DIR = process.env.KX_DATA_DIR || join(__dirname, 'data')
 const DB_FILE = join(DATA_DIR, 'db.json')
 
 const EMPTY = { users: [], stores: [], cogs: [], competitors: [], snapshots: [], alerts: [], opportunities: [], imports: [], taobaoProducts: [], taobaoKeys: [], repricers: [], aiSettings: [], accessGrants: [] }

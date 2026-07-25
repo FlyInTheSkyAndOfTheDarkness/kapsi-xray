@@ -6,7 +6,7 @@ import * as taobao from './taobao.js'
 import * as kaspi from './kaspi.js'
 import { makeZip } from './zip.js'
 import { removeUploadedImages, saveUploadedImage } from './uploads.js'
-import { applyPreorder, canonicalTaobaoUrl, isPlatformMetadata, MAX_PREORDER_DAYS, normalizeImages, normalizePreorderDays, sanitizeDescription, sanitizeProductTitle } from './taobao-product.js'
+import { applyPreorder, canonicalTaobaoUrl, isPlatformMetadata, kaspiSku, MAX_PREORDER_DAYS, NO_BRAND, normalizeImages, normalizePreorderDays, sanitizeDescription, sanitizeProductTitle } from './taobao-product.js'
 import { ensurePriceListFeedKey, preorderPriceListSummary } from './kaspi-price-list.js'
 import { suggestKaspiAttributes } from './ai-attributes.js'
 import { attributeLabelRu, loadClassificationAttributes, normalizeKaspiAttributeCode, validateClassificationAttributes } from './kaspi-classification.js'
@@ -74,9 +74,11 @@ function mergeProduct(saved, bodyProduct = {}) {
     attributes: Array.isArray(bodyProduct.attributes) ? bodyProduct.attributes : draft.attributes || [],
     images: normalizeImages(Array.isArray(bodyProduct.images) ? bodyProduct.images : draft.images || []),
   }
-  product.sku = String(product.sku || '').trim()
+  // Card import and price-list feed must carry a byte-identical SKU, so it is
+  // normalized here — the single place every draft passes through.
+  product.sku = kaspiSku(product.sku, saved.id || saved.product?.productId || product.title)
   product.title = sanitizeProductTitle(product.title)
-  product.brand = String(product.brand || '').trim()
+  product.brand = String(product.brand || '').trim() || NO_BRAND
   product.category = String(product.category || '').trim()
   product.description = sanitizeDescription(product.description)
   const salePrice = Math.max(0, Math.round(Number(product.salePrice ?? product.price ?? fallbackPrice) || 0))
@@ -88,6 +90,7 @@ function mergeProduct(saved, bodyProduct = {}) {
     ? product.warehouses
     : String(product.warehouses || '').split(/[,\n;]/).map((x) => x.trim()).filter(Boolean)
   product.warehouses = [...new Set(warehouses)].slice(0, 12)
+  product.feedEnabled = product.feedEnabled !== false
   product.availabilities = product.warehouses.length && product.stock != null
     ? product.warehouses.map((storeId) => ({ storeId, available: product.stock > 0, stockCount: product.stock }))
     : []
@@ -406,13 +409,38 @@ function importView(row) {
   }
 }
 
+/* Kaspi needs an hour to pull the feed and then drops unknown SKUs into
+   «Нераспознанные товары → Без привязки». Only after that silence is it fair to
+   tell the seller the product is waiting to be linked by hand. */
+const AWAITING_LINK_GRACE_MS = 2 * 60 * 60 * 1000
+
+/**
+ * Where the product actually is on the way to the shelf. The import state alone
+ * describes the card only; the price list and the manual linking step are what
+ * decide whether a buyer can order it.
+ */
+function preorderStage(productRow, importState, priceList, store) {
+  if (importState === 'published') return 'on_sale'
+  if (importState === 'rejected') return 'blocked'
+  const inFeed = priceList?.status === 'ready'
+  if (!inFeed) return importState === 'draft' ? 'draft' : 'card_sent'
+  const pulledAfterCreate = store?.priceListFetchedAt
+    && store.priceListFetchedAt - (productRow.createdAt || 0) > AWAITING_LINK_GRACE_MS
+  return pulledAfterCreate ? 'awaiting_link' : 'in_feed'
+}
+
 function preorderView(productRow, importRow, attempts, userId, req = null) {
   const importedProduct = importRow?.products?.[0] || productRow.product?.draft || {}
   const parsed = productRow.product || {}
   const linkedStoreId = importRow?.storeId || productRow.preferredStoreId
   const store = linkedStoreId && find('stores', (row) => row.id === linkedStoreId && row.userId === userId)
   const firstImage = importedProduct.images?.[0]?.url || importedProduct.images?.[0] || parsed.images?.[0] || null
+  const view = importView(importRow)
+  const priceList = store ? preorderPriceListSummary(req, store) : importRow?.priceList || null
   return {
+    stage: preorderStage(productRow, view?.state || 'draft', priceList, store),
+    cardLocked: cardLocked(userId, productRow),
+    feedEnabled: importedProduct.feedEnabled !== false,
     id: productRow.id,
     title: importedProduct.title || parsed.titleRu || parsed.title || importedProduct.sku || (String(parsed.source || '').startsWith('1688') ? 'Товар 1688' : 'Товар Taobao'),
     sku: importedProduct.sku || '',
@@ -422,8 +450,8 @@ function preorderView(productRow, importRow, attempts, userId, req = null) {
     deliveryDays: normalizePreorderDays(importedProduct.deliveryDays),
     stock: importedProduct.stock ?? importedProduct.quantity ?? null,
     store: store ? { id: store.id, name: store.name, merchantId: store.merchantId, hasToken: !!store.token } : null,
-    priceList: store ? preorderPriceListSummary(req, store) : importRow?.priceList || null,
-    import: importView(importRow) || {
+    priceList,
+    import: view || {
       id: null,
       code: null,
       state: 'draft',
@@ -529,10 +557,23 @@ function missingRequiredFields(product = {}) {
   return missing
 }
 
+/**
+ * Kaspi: «не редактируйте карточку товара, иначе покупатели не смогут оформить
+ * на него предзаказ. Используйте для этого прайс-лист». So a card goes out once;
+ * afterwards price, stock and lead time may only change through the feed.
+ * Re-sending needs an explicit unlock, and the lock re-engages right after.
+ */
+export function cardLocked(userId, productRow) {
+  const published = importsForProduct(userId, productRow.id).filter((row) => row.code)
+  if (!published.length) return false
+  return (productRow.cardUnlockedAt || 0) <= Math.max(...published.map((row) => row.createdAt || 0))
+}
+
 async function publishTaobaoProduct(req, res, { productRow, storeId, sourceProduct }) {
   const store = find('stores', (row) => row.id === storeId && row.userId === req.user.id)
   if (!store) return res.status(404).json({ error: 'store_not_found' })
   if (!store.token) return res.status(400).json({ error: 'no_token' })
+  if (cardLocked(req.user.id, productRow)) return res.status(409).json({ error: 'card_locked' })
   ensurePriceListFeedKey(store)
 
   const product = mergeProduct(productRow, sourceProduct || {})
@@ -934,12 +975,36 @@ taobaoRouter.post('/preorders/:id/retry', async (req, res) => {
     .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0))
   const previous = attempts[0]
   if (!previous) return res.status(400).json({ error: 'no_previous_import' })
+
+  // The card is already live: re-sending it would drop the pre-order. Save the
+  // draft instead — Kaspi reads the new price and stock from the feed.
+  if (cardLocked(req.user.id, productRow)) {
+    const product = mergeProduct(productRow, req.body?.product || previous.products?.[0] || {})
+    update('taobaoProducts', productRow.id, {
+      product: { ...productRow.product, draft: product },
+      draftEditedAt: Date.now(),
+      updatedAt: Date.now(),
+    })
+    return res.json({ ok: true, via: 'feed', preorder: preorderDetail(productRow, req.user.id, req) })
+  }
+
   const storeId = req.body?.storeId || previous.storeId
   return publishTaobaoProduct(req, res, {
     productRow,
     storeId,
     sourceProduct: req.body?.product || previous.products?.[0] || {},
   })
+})
+
+/**
+ * POST /api/taobao/preorders/:id/unlock-card — allow one more card publication.
+ * Deliberate and one-shot: Kaspi resets the pre-order when a card is edited.
+ */
+taobaoRouter.post('/preorders/:id/unlock-card', (req, res) => {
+  const productRow = find('taobaoProducts', (row) => row.id === req.params.id && row.userId === req.user.id)
+  if (!productRow) return res.status(404).json({ error: 'not_found' })
+  update('taobaoProducts', productRow.id, { cardUnlockedAt: Date.now(), updatedAt: Date.now() })
+  res.json({ ok: true, preorder: preorderDetail(productRow, req.user.id, req) })
 })
 
 /** GET /api/taobao/:id — load a parsed product. */

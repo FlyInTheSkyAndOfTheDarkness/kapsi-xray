@@ -1,4 +1,4 @@
-import { canonicalTaobaoUrl, isPlatformMetadata, preorderDraftDefaults, sanitizeProductTitle } from './taobao-product.js'
+import { canonicalTaobaoUrl, isPlatformMetadata, kaspiSku, preorderDraftDefaults, sanitizeProductTitle } from './taobao-product.js'
 
 const UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36'
 const CNY_RATE_FALLBACK = 72
@@ -398,7 +398,7 @@ export async function parseTaobao(input, { shippingCny = 0, markupPct = 0, rate:
     specs,
     images,
     draft: {
-      sku: productId ? `${finalMarketplace.skuPrefix}-${productId}` : `${finalMarketplace.skuPrefix}-${Date.now()}`,
+      sku: kaspiSku(`${finalMarketplace.skuPrefix}${productId || Date.now()}`),
       title: titleRu || title,
       brand,
       category: '',
@@ -468,7 +468,7 @@ export async function productFromBrowserPayload(payload = {}, { shippingCny = 0,
     specs,
     images,
     draft: {
-      sku: productId ? `${marketplace.skuPrefix}-${productId}` : `${marketplace.skuPrefix}-${Date.now()}`,
+      sku: kaspiSku(`${marketplace.skuPrefix}${productId || Date.now()}`),
       title: titleRu || title,
       brand,
       category: '',

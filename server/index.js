@@ -83,7 +83,9 @@ if (existsSync(dist)) {
 }
 
 const PORT = process.env.PORT || 8787
-app.listen(PORT, () => {
+export const server = app.listen(PORT, () => {
   console.log(`Kaspi X-Ray backend on http://localhost:${PORT}`)
-  startScheduler()
+  // Tests boot the same app but must not start background timers.
+  if (process.env.KX_NO_SCHEDULER !== '1') startScheduler()
 })
+export { app }

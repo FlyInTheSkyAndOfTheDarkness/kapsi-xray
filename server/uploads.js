@@ -1,10 +1,9 @@
 import { existsSync, mkdirSync, unlinkSync, writeFileSync } from 'node:fs'
-import { basename, dirname, join } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { basename, join } from 'node:path'
 import { randomBytes } from 'node:crypto'
+import { DATA_DIR } from './db.js'
 
-const __dirname = dirname(fileURLToPath(import.meta.url))
-export const UPLOAD_DIR = join(__dirname, 'data', 'uploads')
+export const UPLOAD_DIR = join(DATA_DIR, 'uploads')
 
 const TYPES = {
   'image/jpeg': 'jpg',

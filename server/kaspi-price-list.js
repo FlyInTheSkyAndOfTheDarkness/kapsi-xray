@@ -61,6 +61,28 @@ export function preorderFeedUrl(req, store) {
   return base && key ? `${base}/api/stores/preorder-feed/${key}.xml` : null
 }
 
+/**
+ * The store's pickup points, each flagged as selling or not.
+ * Kaspi stops selling from a point only when it receives `available="no"` for it —
+ * a point simply left out of the file keeps its previous price and stays on sale.
+ * Falls back to the points named on the products themselves.
+ */
+export function storeWarehouseMap(store, productWarehouses = []) {
+  const configured = Array.isArray(store?.priceListWarehouses) ? store.priceListWarehouses : []
+  const seen = new Set()
+  const map = configured
+    .map((item) => ({
+      id: normalizeWarehouseId(String(item?.id ?? item ?? '').trim()),
+      available: typeof item === 'object' && item !== null ? item.available !== false : true,
+    }))
+    .filter((item) => item.id && !seen.has(item.id) && (seen.add(item.id), true))
+  if (map.length) return map.slice(0, 5)
+  return sanitizeWarehouses(productWarehouses).map(normalizeWarehouseId).filter(Boolean)
+    .filter((id) => !seen.has(id) && (seen.add(id), true))
+    .map((id) => ({ id, available: true }))
+    .slice(0, 5)
+}
+
 export function preorderPriceListOffers(store) {
   const offers = []
   const skipped = []
@@ -76,13 +98,20 @@ export function preorderPriceListOffers(store) {
     const price = Math.max(0, Math.round(Number(product.salePrice ?? product.price) || 0))
     const stockCount = Math.max(0, Math.round(Number(product.stock ?? product.quantity) || 0))
     const preOrder = normalizePreorderDays(product.deliveryDays ?? product.preorderDays ?? product.preOrderDays)
-    const warehouses = sanitizeWarehouses(product.warehouses).map(normalizeWarehouseId).filter(Boolean)
+    const warehouses = storeWarehouseMap(store, product.warehouses)
     const images = normalizeImages(product.images)
-    if (!sku || !model || !brand || !price || !stockCount || !warehouses.length || !images.length || preOrder > MAX_PREORDER_DAYS) {
+    if (!sku || !model || !brand || !price || !warehouses.length || !images.length || preOrder > MAX_PREORDER_DAYS) {
       skipped.push({ importId: row.id, sku, reason: 'missing_preorder_fields' })
       return
     }
-    offers.push({ sku, model, brand, price, stockCount, preOrder, warehouses, importId: row.id })
+    // Withdrawn or out of stock still goes out — with available="no", so Kaspi
+    // takes it off sale instead of keeping the previous price.
+    const sellable = stockCount > 0 && product.feedEnabled !== false
+    const availabilities = warehouses.map(({ id, available }) => {
+      const sells = sellable && available
+      return { storeId: id, available: sells, stockCount: sells ? stockCount : 0, preOrder: sells ? preOrder : 0 }
+    })
+    offers.push({ sku, model, brand, price, stockCount, preOrder, warehouses, availabilities, withdrawn: !sellable, importId: row.id })
   })
   return { offers, skipped }
 }
@@ -95,8 +124,13 @@ export function preorderPriceListSummary(req, store) {
     status: offers.length ? 'ready' : 'empty',
     url: preorderFeedUrl(req, store),
     items: offers.length,
+    selling: offers.filter((offer) => !offer.withdrawn).length,
+    withdrawn: offers.filter((offer) => offer.withdrawn).length,
     skipped: skipped.length,
+    warehouses: storeWarehouseMap(store),
     maxPreorderDays: MAX_PREORDER_DAYS,
+    fetchedAt: store.priceListFetchedAt || null,
+    fetchCount: store.priceListFetchCount || 0,
     updatedAt: Date.now(),
   }
 }
@@ -115,8 +149,11 @@ export function buildPreorderPriceListXml(store) {
     lines.push(`      <model>${xmlText(offer.model)}</model>`)
     lines.push(`      <brand>${xmlText(offer.brand)}</brand>`)
     lines.push('      <availabilities>')
-    offer.warehouses.forEach((storeId) => {
-      lines.push(`        <availability available="yes" storeId="${xmlAttr(storeId)}" preOrder="${offer.preOrder}" stockCount="${offer.stockCount}"/>`)
+    offer.availabilities.forEach(({ storeId, available, stockCount, preOrder }) => {
+      const attrs = [`available="${available ? 'yes' : 'no'}"`, `storeId="${xmlAttr(storeId)}"`, `stockCount="${stockCount}"`]
+      // «Не передавайте атрибут, если на товар не нужно делать предзаказ.»
+      if (preOrder > 0) attrs.push(`preOrder="${preOrder}"`)
+      lines.push(`        <availability ${attrs.join(' ')}/>`)
     })
     lines.push('      </availabilities>')
     lines.push(`      <price>${offer.price}</price>`)

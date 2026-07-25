@@ -296,6 +296,7 @@ export default function TaobaoPreorderDetail() {
   const [feedLoading, setFeedLoading] = useState(false)
   const [feedError, setFeedError] = useState('')
   const [feedCopied, setFeedCopied] = useState(false)
+  const [unlocking, setUnlocking] = useState(false)
   const [validationAttempted, setValidationAttempted] = useState(false)
   const [serverAttributeIssues, setServerAttributeIssues] = useState([])
 
@@ -652,6 +653,34 @@ export default function TaobaoPreorderDetail() {
       setFeedError(t('preorder_detail.feed_copy_error'))
     }
   }
+  /* Switching a pickup point off keeps it in the XML with available="no" — the
+     only way Kaspi stops selling from it. */
+  const saveWarehouses = async (warehouses) => {
+    if (!storeId) return
+    setFeedError('')
+    try {
+      const result = await API.saveStorePreorderFeed(storeId, { warehouses })
+      setFeedInfo(result.feed)
+    } catch {
+      setFeedError(t('preorder_detail.save_error'))
+    }
+  }
+
+  const unlockCard = async () => {
+    if (!window.confirm(t('preorder_detail.unlock_confirm'))) return
+    setUnlocking(true)
+    setError('')
+    try {
+      const result = await API.unlockPreorderCard(id)
+      setData(result.preorder)
+      setMessage(t('preorder_detail.unlocked'))
+    } catch {
+      setError(t('preorder_detail.save_error'))
+    } finally {
+      setUnlocking(false)
+    }
+  }
+
   const scrollToPhotos = () => {
     document.getElementById('preorder-photos')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
   }
@@ -1140,8 +1169,38 @@ export default function TaobaoPreorderDetail() {
                 <div className="mini-note"><span className="msym">info</span>{feedError || t('preorder_detail.feed_wait')}</div>
               )}
               {feed?.url && <div className={`mini-note ${feedIsLocal ? 'warn' : ''}`}><span className="msym">{feedIsLocal ? 'warning' : 'settings'}</span>{feedIsLocal ? t('preorder_detail.feed_local_note') : t('preorder_detail.feed_note')}</div>}
+              {!!feed?.warehouses?.length && (
+                <div className="preorder-feed-warehouses">
+                  <span className="field-label">{t('preorder_detail.feed_warehouses')}</span>
+                  {feed.warehouses.map((warehouse) => (
+                    <label key={warehouse.id} className="preorder-feed-warehouse">
+                      <input
+                        type="checkbox"
+                        checked={warehouse.available !== false}
+                        onChange={(event) => saveWarehouses(feed.warehouses.map((row) => (
+                          row.id === warehouse.id ? { ...row, available: event.target.checked } : row
+                        )))}
+                      />
+                      <span className="mono">{warehouse.id}</span>
+                      <span>{warehouse.available !== false ? t('preorder_detail.feed_wh_yes') : t('preorder_detail.feed_wh_no')}</span>
+                    </label>
+                  ))}
+                  <span className="field-hint">{t('preorder_detail.feed_warehouses_hint')}</span>
+                </div>
+              )}
             </div>
-            <button className="btn btn-primary preorder-publish-button" onClick={publish} disabled={publishing || saving || attributesLoading || !selectedStore?.hasToken}><span className={`msym ${publishing ? 'spin' : ''}`}>{publishing ? 'progress_activity' : 'publish'}</span>{t(status === 'draft' ? 'preorder_detail.publish_first' : 'preorder_detail.publish')}</button>
+            {data.cardLocked ? (
+              <div className="preorder-card-lock">
+                <div><span className="msym">lock</span><b>{t('preorder_detail.card_locked')}</b></div>
+                <p>{t('preorder_detail.card_locked_note')}</p>
+                <button className="btn btn-ghost btn-sm" type="button" onClick={unlockCard} disabled={unlocking}>
+                  <span className={`msym ${unlocking ? 'spin' : ''}`}>{unlocking ? 'progress_activity' : 'lock_open'}</span>
+                  {t('preorder_detail.unlock_card')}
+                </button>
+              </div>
+            ) : (
+              <button className="btn btn-primary preorder-publish-button" onClick={publish} disabled={publishing || saving || attributesLoading || !selectedStore?.hasToken}><span className={`msym ${publishing ? 'spin' : ''}`}>{publishing ? 'progress_activity' : 'publish'}</span>{t(status === 'draft' ? 'preorder_detail.publish_first' : 'preorder_detail.publish')}</button>
+            )}
           </div>
         </Card>
       </div>

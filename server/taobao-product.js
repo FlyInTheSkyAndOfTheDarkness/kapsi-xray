@@ -1,5 +1,26 @@
+import { createHash } from 'node:crypto'
+
 export const DEFAULT_PREORDER_DAYS = 14
 export const MAX_PREORDER_DAYS = 30
+
+/* Kaspi price list: «Артикул может содержать цифры и латинские буквы.
+   Максимальная длина — 20 символов. Артикул должен быть уникальным для каждого
+   товара». A hyphen or a Cyrillic letter here means Kaspi cannot match the offer
+   to its card, so the SKU is normalized in one place and used everywhere. */
+export const MAX_SKU_LENGTH = 20
+
+export function kaspiSku(value, seed = '') {
+  const clean = String(value ?? '').replace(/[^A-Za-z0-9]/g, '')
+  if (clean) return clean.slice(0, MAX_SKU_LENGTH)
+  const source = String(seed || '').trim()
+  if (!source) return ''
+  return `TB${createHash('sha1').update(source).digest('hex').slice(0, MAX_SKU_LENGTH - 2)}`
+}
+
+/* Kaspi: «Напишите "Без бренда", если для продажи товара не нужно получать
+   разрешение на торговлю». Goods from Taobao/1688 are usually unbranded and an
+   empty <brand> is rejected. */
+export const NO_BRAND = 'Без бренда'
 
 export function normalizePreorderDays(value) {
   const days = Number(value)

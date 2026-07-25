@@ -1,5 +1,6 @@
 import { find, update } from './db.js'
 import * as kaspi from './kaspi.js'
+import { preorderRowForSku, setPreorderPrice } from './preorder-link.js'
 
 const clampNumber = (v, fallback = 0) => {
   const n = Number(v)
@@ -75,6 +76,21 @@ export async function runRepricer(rule) {
       lastAction: 'unchanged',
       lastCompetitorPrice: best.price,
       competitors: competitors.length,
+      nextRunAt,
+    })
+  }
+
+  // Pre-order SKUs must not be re-pushed as cards — that would drop the pre-order.
+  // Their price lives in the draft and reaches Kaspi through the price-list feed.
+  const preorderRow = preorderRowForSku(rule.userId, rule.storeId, rule.sku)
+  if (preorderRow) {
+    setPreorderPrice(preorderRow, targetPrice)
+    return updateRun(rule, {
+      lastError: null,
+      lastAction: 'feed_price_changed',
+      lastCompetitorPrice: best.price,
+      competitors: competitors.length,
+      currentPrice: targetPrice,
       nextRunAt,
     })
   }
