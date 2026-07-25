@@ -5,9 +5,32 @@ const CNY_RATE_FALLBACK = 72
 
 let rateCache = { ts: 0, rate: CNY_RATE_FALLBACK }
 
+const TAOBAO_DOMAINS = ['taobao.com', 'tmall.com', 'tmall.hk', 'm.tb.cn', 'tb.cn']
+const IMAGE_HOST_RE = /(^|\.)(alicdn|taobao|tmall|tbcdn|1688)\./i
+
+function hostMatches(host, domain) {
+  return host === domain || host.endsWith(`.${domain}`)
+}
+
+function marketplaceFromHost(host = '') {
+  const h = String(host || '').toLowerCase()
+  if (hostMatches(h, '1688.com')) return { key: '1688', label: '1688', skuPrefix: '1688' }
+  if (TAOBAO_DOMAINS.some((domain) => hostMatches(h, domain))) return { key: 'taobao', label: 'Taobao', skuPrefix: 'TB' }
+  return null
+}
+
+function marketplaceFromUrl(value) {
+  try {
+    return marketplaceFromHost(new URL(String(value || '')).hostname)
+  } catch {
+    return null
+  }
+}
+
 const SPEC_KEY_RU = {
   颜色: 'Цвет',
   颜色分类: 'Цвет',
+  类目: 'Категория',
   尺码: 'Размер',
   尺寸: 'Размер',
   规格: 'Спецификация',
@@ -100,8 +123,17 @@ function safeTaobaoUrl(input) {
   }
   if (!['http:', 'https:'].includes(url.protocol)) return null
   const host = url.hostname.toLowerCase()
-  const ok = ['taobao.com', 'tmall.com', 'tmall.hk', 'm.tb.cn', 'tb.cn'].some((d) => host === d || host.endsWith(`.${d}`))
-  return ok ? url.toString() : null
+  const marketplace = marketplaceFromHost(host)
+  if (!marketplace) return null
+  const offerId = url.searchParams.get('offerId') || url.pathname.match(/\/offer\/(\d{6,})\.html/i)?.[1]
+  if (marketplace.key === '1688' && offerId && /^\d{6,}$/.test(offerId)) return `https://detail.1688.com/offer/${offerId}.html`
+  const itemId = url.searchParams.get('id') || url.searchParams.get('itemId')
+  if (itemId && /^\d{6,}$/.test(itemId)) {
+    url.hash = ''
+    url.search = ''
+    url.searchParams.set('id', itemId)
+  }
+  return url.toString()
 }
 
 async function fetchWithTimeout(url, opts = {}, timeoutMs = 18000) {
@@ -156,7 +188,13 @@ export async function translateZh(text) {
 function extractId(url) {
   try {
     const u = new URL(url)
-    return u.searchParams.get('id') || u.searchParams.get('itemId') || (url.match(/(?:id=|itemId=)(\d{6,})/) || [])[1] || ''
+    return u.searchParams.get('id')
+      || u.searchParams.get('itemId')
+      || u.searchParams.get('offerId')
+      || u.pathname.match(/\/offer\/(\d{6,})\.html/i)?.[1]
+      || (url.match(/(?:id=|itemId=|offerId=)(\d{6,})/) || [])[1]
+      || (url.match(/\/offer\/(\d{6,})\.html/i) || [])[1]
+      || ''
   } catch {
     return ''
   }
@@ -166,6 +204,9 @@ function extractTitle(html) {
   const candidates = [
     html.match(/<meta[^>]+property=["']og:title["'][^>]+content=["']([^"']+)/i)?.[1],
     html.match(/<meta[^>]+name=["']title["'][^>]+content=["']([^"']+)/i)?.[1],
+    html.match(/"subject"\s*:\s*"([^"]{3,220})"/i)?.[1],
+    html.match(/"offerTitle"\s*:\s*"([^"]{3,220})"/i)?.[1],
+    html.match(/"productTitle"\s*:\s*"([^"]{3,220})"/i)?.[1],
     html.match(/"title"\s*:\s*"([^"]{3,220})"/i)?.[1],
     html.match(/<title[^>]*>([\s\S]{3,260}?)<\/title>/i)?.[1],
   ].filter(Boolean).map(cleanText)
@@ -178,8 +219,15 @@ function extractPrice(html) {
     /"priceText"\s*:\s*"¥?\s*([\d.]+)\s*"/i,
     /"price"\s*:\s*"¥?\s*([\d.]+)\s*"/i,
     /"salePrice"\s*:\s*"¥?\s*([\d.]+)\s*"/i,
+    /"discountPrice"\s*:\s*"¥?\s*([\d.]+)\s*"/i,
+    /"consignPrice"\s*:\s*"¥?\s*([\d.]+)\s*"/i,
     /"reservePrice"\s*:\s*"¥?\s*([\d.]+)\s*"/i,
     /"priceRange"\s*:\s*"¥?\s*([\d.]+)/i,
+    /"priceDisplay"\s*:\s*"¥?\s*([\d.]+)\s*"/i,
+    /"minPrice"\s*:\s*"¥?\s*([\d.]+)\s*"/i,
+    /"offerMinPrice"\s*:\s*"¥?\s*([\d.]+)\s*"/i,
+    /"priceRanges?"\s*:\s*\[\s*\{[\s\S]{0,300}?"price"\s*:\s*"?¥?\s*([\d.]+)/i,
+    /"priceModel"\s*:\s*\{[\s\S]{0,800}?"price"\s*:\s*"?¥?\s*([\d.]+)/i,
   ]
   for (const p of patterns) {
     const n = Number((html.match(p) || [])[1])
@@ -195,7 +243,7 @@ function normalizeImageUrl(raw) {
   if (u.startsWith('http://')) u = `https://${u.slice(7)}`
   try {
     const url = new URL(u)
-    if (!/\.(alicdn|taobao|tmall|tbcdn)\./i.test(url.hostname)) return null
+    if (!IMAGE_HOST_RE.test(url.hostname)) return null
     url.search = ''
     return url.toString()
   } catch {
@@ -208,7 +256,7 @@ function extractImages(html) {
   const og = html.match(/<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']+)/i)?.[1]
   const ogUrl = normalizeImageUrl(og)
   if (ogUrl) out.add(ogUrl)
-  const re = /(?:https?:)?\/\/(?:img|gw|g|gd|imgextra)\.alicdn\.com\/[^"'\\<>\s]+?\.(?:jpg|jpeg|png|webp)/ig
+  const re = /(?:https?:)?\/\/(?:[^"'\\<>\s/]+\.)?(?:alicdn|taobao|tmall|tbcdn|1688)\.[^"'\\<>\s]+?\.(?:jpg|jpeg|png|webp)/ig
   for (const m of html.matchAll(re)) {
     const u = normalizeImageUrl(m[0])
     if (u) out.add(u)
@@ -230,10 +278,23 @@ function addSpec(map, key, value) {
 function extractSpecs(html) {
   const map = new Map()
   const decoded = decodeHtml(html)
+  const category = decoded.match(/"leafCategoryName"\s*:\s*"([^"]{1,80})"/i)?.[1]
+  if (category) addSpec(map, '类目', category)
+  const info = decoded.match(/"offerIDatacenterSellInfo"\s*:\s*\{([\s\S]{0,1200}?)\}/i)?.[1] || ''
+  for (const m of info.matchAll(/"([^"\\]{1,60})"\s*:\s*"([^"]{1,160})"/g)) {
+    addSpec(map, m[1], m[2])
+  }
+  for (const m of decoded.matchAll(/"prop"\s*:\s*"([^"]{1,60})"\s*,\s*"value"\s*:\s*\[([\s\S]{1,1800}?)\]/g)) {
+    const values = [...m[2].matchAll(/"name"\s*:\s*"([^"]{1,160})"/g)].map((x) => cleanText(x[1])).filter(Boolean)
+    if (values.length) addSpec(map, m[1], [...new Set(values)].slice(0, 6).join(', ').slice(0, 155))
+  }
   const pairs = [
     /"name"\s*:\s*"([^"]{1,60})"\s*,\s*"value"\s*:\s*"([^"]{1,160})"/g,
     /"key"\s*:\s*"([^"]{1,60})"\s*,\s*"value"\s*:\s*"([^"]{1,160})"/g,
     /"propName"\s*:\s*"([^"]{1,60})"\s*,\s*"valueName"\s*:\s*"([^"]{1,160})"/g,
+    /"attrName"\s*:\s*"([^"]{1,60})"\s*,\s*"attrValue"\s*:\s*"([^"]{1,160})"/g,
+    /"attributeName"\s*:\s*"([^"]{1,60})"\s*,\s*"value"\s*:\s*"([^"]{1,160})"/g,
+    /"featureName"\s*:\s*"([^"]{1,60})"\s*,\s*"featureValue"\s*:\s*"([^"]{1,160})"/g,
     /"name"\s*:\s*"([^"]{1,60})"\s*,\s*"values"\s*:\s*\[\s*\{\s*"name"\s*:\s*"([^"]{1,160})"/g,
   ]
   pairs.forEach((re) => {
@@ -251,8 +312,10 @@ function extractSpecs(html) {
 }
 
 function looksBlocked(url, html) {
-  const s = `${url}\n${html.slice(0, 6000)}`
-  return /login|captcha|验证码|滑块|访问受限|安全验证|punish|verify/i.test(s) && !/"price"|"title"|og:title/i.test(s)
+  const s = `${url}\n${html.slice(0, 120000)}`
+  const hasBlockSignal = /login|captcha|验证码|滑块|访问受限|安全验证|身份验证|请登录|登录后|会员登录|punish|verify|security/i.test(s)
+  const hasProductSignal = /"subject"\s*:|"offerId"\s*:|"priceDisplay"\s*:|"mainImageList"\s*:|"leafCategoryName"\s*:|"fullPathImageURI"\s*:|<meta[^>]+property=["']og:title["']|<title[^>]*>[\s\S]{3,260}?<\/title>/i.test(s)
+  return hasBlockSignal && !hasProductSignal
 }
 
 export async function parseTaobao(input, { shippingCny = 0, markupPct = 0, rate: manualRate } = {}) {
@@ -262,16 +325,31 @@ export async function parseTaobao(input, { shippingCny = 0, markupPct = 0, rate:
     e.code = 'bad_url'
     throw e
   }
-  const res = await fetchWithTimeout(url, {
+  const marketplace = marketplaceFromUrl(url) || { key: 'taobao', skuPrefix: 'TB' }
+  const requestHeaders = {
+    'User-Agent': UA,
+    Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+    'Accept-Language': 'zh-CN,zh;q=0.9,ru;q=0.8,en;q=0.7',
+  }
+  let res = await fetchWithTimeout(url, {
     redirect: 'follow',
-    headers: {
-      'User-Agent': UA,
-      Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-      'Accept-Language': 'zh-CN,zh;q=0.9,ru;q=0.8,en;q=0.7',
-    },
+    headers: requestHeaders,
   })
-  const html = await res.text()
-  const finalUrl = res.url || url
+  let html = await res.text()
+  let finalUrl = res.url || url
+  if (marketplace.key === '1688' && (!res.ok || looksBlocked(finalUrl, html))) {
+    const productIdHint = extractId(finalUrl) || extractId(url)
+    if (productIdHint) {
+      const mobileUrl = `https://m.1688.com/offer/${productIdHint}.html`
+      const mobileRes = await fetchWithTimeout(mobileUrl, { redirect: 'follow', headers: requestHeaders })
+      const mobileHtml = await mobileRes.text()
+      if (mobileRes.ok && !looksBlocked(mobileRes.url || mobileUrl, mobileHtml)) {
+        res = mobileRes
+        html = mobileHtml
+        finalUrl = mobileRes.url || mobileUrl
+      }
+    }
+  }
   if (!res.ok || looksBlocked(finalUrl, html)) {
     const e = new Error('TAOBAO_BLOCKED')
     e.code = 'taobao_blocked'
@@ -296,6 +374,7 @@ export async function parseTaobao(input, { shippingCny = 0, markupPct = 0, rate:
     specs.push({ ...s, keyRu: await translateZh(s.key), valueRu: await translateZh(s.value) })
   }
   const productId = extractId(finalUrl) || extractId(url)
+  const finalMarketplace = marketplaceFromUrl(finalUrl) || marketplace
   const brand = specs.find((s) => /бренд/i.test(s.keyRu))?.valueRu || ''
   const description = [
     titleRu,
@@ -305,7 +384,7 @@ export async function parseTaobao(input, { shippingCny = 0, markupPct = 0, rate:
     `Источник: ${canonicalTaobaoUrl(finalUrl)}`,
   ].join('\n')
   return {
-    source: 'taobao',
+    source: finalMarketplace.key,
     sourceUrl: canonicalTaobaoUrl(url),
     finalUrl: canonicalTaobaoUrl(finalUrl),
     productId,
@@ -319,7 +398,7 @@ export async function parseTaobao(input, { shippingCny = 0, markupPct = 0, rate:
     specs,
     images,
     draft: {
-      sku: productId ? `TB-${productId}` : `TB-${Date.now()}`,
+      sku: productId ? `${finalMarketplace.skuPrefix}-${productId}` : `${finalMarketplace.skuPrefix}-${Date.now()}`,
       title: titleRu || title,
       brand,
       category: '',
@@ -340,7 +419,13 @@ export async function productFromBrowserPayload(payload = {}, { shippingCny = 0,
     e.code = 'bad_url'
     throw e
   }
-  const title = cleanText(payload.title || '')
+  const marketplace = marketplaceFromUrl(url) || { key: 'taobao', skuPrefix: 'TB' }
+  const sellerName = cleanText(payload.sellerName || payload.seller || '')
+  const subject = cleanText(payload.subject || '')
+  const rawTitle = cleanText(payload.title || '')
+  const sellerTitle = sellerName && rawTitle.toLowerCase() === sellerName.toLowerCase()
+  const companyTitle = /有限公司|有限责任|公司|co\.,?\s*ltd|company|factory|store|shop/i.test(rawTitle)
+  const title = subject || (sellerTitle || companyTitle ? '' : rawTitle)
   const specsRaw = Array.isArray(payload.specs)
     ? payload.specs.map((s) => ({ key: cleanText(s.key), value: cleanText(s.value) })).filter((s) => s.key && s.value && !isPlatformMetadata(s.key, s.value))
     : []
@@ -369,7 +454,7 @@ export async function productFromBrowserPayload(payload = {}, { shippingCny = 0,
     `Источник: ${canonicalTaobaoUrl(url)}`,
   ].join('\n')
   return {
-    source: 'taobao-browser',
+    source: `${marketplace.key}-browser`,
     sourceUrl: canonicalTaobaoUrl(url),
     finalUrl: canonicalTaobaoUrl(url),
     productId,
@@ -383,7 +468,7 @@ export async function productFromBrowserPayload(payload = {}, { shippingCny = 0,
     specs,
     images,
     draft: {
-      sku: productId ? `TB-${productId}` : `TB-${Date.now()}`,
+      sku: productId ? `${marketplace.skuPrefix}-${productId}` : `${marketplace.skuPrefix}-${Date.now()}`,
       title: titleRu || title,
       brand,
       category: '',
@@ -402,7 +487,7 @@ export function allowedImageUrl(raw) {
   if (!u) return null
   try {
     const host = new URL(u).hostname
-    return /\.(alicdn|taobao|tmall|tbcdn)\./i.test(host) ? u : null
+    return IMAGE_HOST_RE.test(host) ? u : null
   } catch {
     return null
   }

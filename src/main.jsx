@@ -8,12 +8,15 @@ import { AppStateProvider } from './state/AppState.jsx'
 import { StoreDataProvider } from './state/Store.jsx'
 import { CompetitorsProvider } from './state/Competitors.jsx'
 import { AlertsProvider } from './state/Alerts.jsx'
+import { startMaterialSymbolFallback } from './lib/materialSymbolFallback.js'
 import './styles/theme.css'
 import './styles/global.css'
 import './styles/shell.css'
 import './styles/pages.css'
 import './styles/charts.css'
 import './styles/xray.css'
+
+startMaterialSymbolFallback()
 
 ReactDOM.createRoot(document.getElementById('root')).render(
   <React.StrictMode>

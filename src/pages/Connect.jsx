@@ -46,6 +46,11 @@ export default function Connect() {
     }
   }
 
+  async function detachStore() {
+    if (typeof window !== 'undefined' && !window.confirm(t('connect.disconnect_confirm'))) return
+    await disconnect()
+  }
+
   const totals = useMemo(() => {
     const revenue = products.reduce((s, r) => s + (r.est?.revenue || 0), 0)
     const sales = products.reduce((s, r) => s + (r.est?.sales || 0), 0)
@@ -61,12 +66,14 @@ export default function Connect() {
   }, [real])
 
   const showForm = !hasStore && !loading
+  const publicUnavailable = store?.publicStatus === 'unavailable'
+  const visibleProductCount = publicUnavailable && store?.productCount ? store.productCount : products.length
 
   return (
     <div className="fade-in">
       <PageHead title={t('connect.title')} sub={t('connect.subtitle')}>
         {stores.length > 1 && <select className="select" value={activeId || ''} onChange={(e) => setActive(e.target.value)}>{stores.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}</select>}
-        {hasStore && <button className="btn btn-ghost btn-sm" onClick={disconnect}><span className="msym">link_off</span> {t('connect.disconnect')}</button>}
+        {hasStore && <button className="btn btn-ghost btn-sm" onClick={detachStore}><span className="msym">link_off</span> {t('connect.disconnect')}</button>}
       </PageHead>
 
       <Card className="connect-form" style={{ marginBottom: 18 }}>
@@ -93,14 +100,17 @@ export default function Connect() {
             <div className="sh-logo"><span className="msym">storefront</span></div>
             <div style={{ flex: 1, minWidth: 0 }}>
               <div className="xh-badges">
-                <span className="pill pos"><span className="msym">public</span>{t('connect.public_badge')}</span>
+                <span className={`pill ${publicUnavailable ? 'warn' : 'pos'}`}><span className="msym">{publicUnavailable ? 'cloud_off' : 'public'}</span>{publicUnavailable ? t('connect.public_unavailable_badge') : t('connect.public_badge')}</span>
                 {store.rating && <span className="rating"><span className="msym">star</span>{store.rating} · {num(store.reviews || 0)}</span>}
                 {store.hasToken && <span className="pill brand"><span className="msym">key</span>API</span>}
               </div>
               <h2 className="xh-title">{store.name}</h2>
-              <div className="muted">ID {store.merchantId} · {products.length} {t('connect.products')}{truncated ? '+' : ''}</div>
+              <div className="muted">ID {store.merchantId} · {visibleProductCount} {t('connect.products')}{truncated ? '+' : ''}</div>
             </div>
-            <button className="btn btn-primary btn-sm" onClick={() => navigate('/')}><span className="msym">dashboard</span> {t('nav.overview')}</button>
+            <div className="store-head-actions">
+              <button className="btn btn-primary btn-sm" onClick={() => navigate('/')}><span className="msym">dashboard</span> {t('nav.overview')}</button>
+              <button className="btn btn-danger btn-sm" onClick={detachStore}><span className="msym">link_off</span> {t('connect.disconnect_store')}</button>
+            </div>
           </Card>
 
           <Card title={t('connect.control_title')} sub={t('connect.control_sub')} className="fade-in merchant-control">
@@ -128,6 +138,7 @@ export default function Connect() {
               <button className="btn btn-ghost" onClick={() => navigate('/taobao')}><span className="msym">shopping_bag</span>{t('connect.open_taobao')}</button>
             </div>
             <div className="mini-note" style={{ alignItems: 'flex-start' }}><span className="msym">info</span>{t('connect.token_note')}</div>
+            {publicUnavailable && <div className="mini-note warn" style={{ alignItems: 'flex-start' }}><span className="msym">cloud_off</span>{t('connect.public_unavailable_note')}</div>}
           </Card>
 
           <div className="stat-grid" style={{ marginTop: 18 }}>
@@ -155,7 +166,7 @@ export default function Connect() {
             </Card>
           )}
 
-          <Card title={t('connect.catalog')} sub={t('connect.catalog_cogs')} pad={false}
+          <Card title={t('connect.catalog')} sub={publicUnavailable ? t('connect.catalog_unavailable_sub') : t('connect.catalog_cogs')} pad={false}
             aside={<button className="btn btn-ghost btn-sm" onClick={() => exportCSV('kaspi-xray-store.csv', [
               { key: 'title', label: t('common.product') }, { key: 'id', label: t('common.sku') }, { key: 'price', label: t('common.price') },
               { label: t('connect.cost'), value: (r) => r.cost || '' }, { label: t('connect.est_sales'), value: (r) => r.est?.sales || 0 },

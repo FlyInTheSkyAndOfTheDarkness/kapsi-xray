@@ -131,6 +131,7 @@ const MONTHS_SHORT = {
   en: ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'],
 }
 const pad2 = (n) => String(n).padStart(2, '0')
+const DAY = 86400000
 const sameDay = (a, b) =>
   a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate()
 
@@ -146,7 +147,6 @@ export function buildSalesSeries(reviews, opts = {}) {
   const dates = (reviews || []).map((r) => parseKaspiDate(r.date)).filter(Boolean)
   const now = new Date()
   now.setHours(0, 0, 0, 0)
-  const DAY = 86400000
   const oldest = dates.length ? new Date(Math.min(...dates.map((d) => d.getTime()))) : null
   const truncated = total ? dates.length < total : false
   const months = MONTHS_SHORT[lang] || MONTHS_SHORT.ru
@@ -164,6 +164,28 @@ export function buildSalesSeries(reviews, opts = {}) {
     })
     const totalRatings = raw.reduce((s, b) => s + b.ratings, 0)
     return { buckets, totalSales: cumSales, totalRevenue: cumRevenue, totalRatings, partial, unit }
+  }
+
+  if (period === 'd365') {
+    const end = new Date(now.getTime() + DAY)
+    const start = new Date(end.getTime() - 365 * DAY)
+    const firstMonth = new Date(start.getFullYear(), start.getMonth(), 1)
+    const currentMonth = new Date(now.getFullYear(), now.getMonth(), 1)
+    const list = []
+    for (let cur = new Date(firstMonth); cur <= currentMonth; cur.setMonth(cur.getMonth() + 1)) {
+      list.push(new Date(cur))
+    }
+    const raw = list.map((m) => {
+      const next = new Date(m.getFullYear(), m.getMonth() + 1, 1)
+      const bucketStart = m < start ? start : m
+      const bucketEnd = next > end ? end : next
+      return {
+        key: `${m.getFullYear()}-${m.getMonth()}`,
+        label: `${months[m.getMonth()]} ${String(m.getFullYear()).slice(2)}`,
+        ratings: dates.filter((d) => d >= bucketStart && d < bucketEnd).length,
+      }
+    })
+    return finalize(raw, 'month', truncated || (oldest && oldest > start))
   }
 
   if (period === 'month') {

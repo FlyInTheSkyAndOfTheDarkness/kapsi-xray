@@ -134,6 +134,40 @@
   border-radius: var(--r-sm);
   padding: 12px;
 }
+.annual-monthly {
+  margin-top: 14px;
+  border-top: var(--border);
+  padding-top: 14px;
+}
+.annual-monthly-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+.annual-monthly-head b,
+.annual-monthly-head span {
+  display: block;
+}
+.annual-monthly-head b {
+  color: var(--ink);
+  font-size: 15px;
+}
+.annual-monthly-head span {
+  color: var(--text-muted);
+  font-size: 12.5px;
+  margin-top: 2px;
+}
+.annual-monthly-table .pill {
+  min-width: 74px;
+  justify-content: center;
+}
+.annual-partial {
+  display: block;
+  margin-top: 2px;
+  font-size: 11px;
+}
 
 .forecast-chart .legend {
   margin-bottom: 4px;
@@ -142,6 +176,10 @@
 @media (max-width: 760px) {
   .annual-kpis {
     grid-template-columns: repeat(2, minmax(130px, 1fr));
+  }
+  .annual-monthly-head {
+    align-items: flex-start;
+    flex-direction: column;
   }
 }
 

@@ -20,6 +20,7 @@ export async function api(path, { method = 'GET', body, auth = true } = {}) {
     const err = new Error((data && data.error) || `HTTP ${res.status}`)
     err.status = res.status
     err.code = data && data.error
+    err.data = data
     throw err
   }
   return data
@@ -48,6 +49,9 @@ export const API = {
   connectStore: (ref, city) => api('/stores/connect', { method: 'POST', body: { ref, city } }),
   store: (id, city) => api(`/stores/${id}${city ? `?city=${city}` : ''}`),
   deleteStore: (id) => api(`/stores/${id}`, { method: 'DELETE' }),
+  storeCategories: (id, params = {}) => api(`/stores/${id}/classification/categories${query(params)}`),
+  storeAttributes: (id, params = {}) => api(`/stores/${id}/classification/attributes${query(params)}`),
+  storePreorderFeed: (id) => api(`/stores/${id}/preorder-feed`),
   setCogs: (id, sku, cost) => api(`/stores/${id}/cogs`, { method: 'PUT', body: { sku, cost } }),
   setProductSettings: (id, sku, body = {}) => api(`/stores/${id}/products/${encodeURIComponent(sku)}/settings`, { method: 'PUT', body }),
   publishProduct: (id, sku, body = {}) => api(`/stores/${id}/products/${encodeURIComponent(sku)}/publish`, { method: 'POST', body }),
@@ -91,6 +95,7 @@ export const API = {
   taobaoPreorders: () => api('/taobao/preorders'),
   taobaoPreorder: (id) => api(`/taobao/preorders/${encodeURIComponent(id)}`),
   saveTaobaoPreorder: (id, product, storeId) => api(`/taobao/preorders/${encodeURIComponent(id)}`, { method: 'PUT', body: { product, storeId } }),
+  suggestTaobaoAttributes: (id, body = {}) => api(`/taobao/preorders/${encodeURIComponent(id)}/ai-attributes`, { method: 'POST', body }),
   uploadTaobaoPreorderPhoto: (id, body) => api(`/taobao/preorders/${encodeURIComponent(id)}/photos`, { method: 'POST', body }),
   deleteTaobaoPreorder: (id) => api(`/taobao/preorders/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   refreshTaobaoPreorders: (ids) => api('/taobao/preorders/refresh', { method: 'POST', body: ids ? { ids } : {} }),

@@ -6,12 +6,19 @@ import * as taobao from './taobao.js'
 import * as kaspi from './kaspi.js'
 import { makeZip } from './zip.js'
 import { removeUploadedImages, saveUploadedImage } from './uploads.js'
-import { applyPreorder, canonicalTaobaoUrl, isPlatformMetadata, normalizeImages, normalizePreorderDays, sanitizeDescription, sanitizeProductTitle } from './taobao-product.js'
+import { applyPreorder, canonicalTaobaoUrl, isPlatformMetadata, MAX_PREORDER_DAYS, normalizeImages, normalizePreorderDays, sanitizeDescription, sanitizeProductTitle } from './taobao-product.js'
+import { ensurePriceListFeedKey, preorderPriceListSummary } from './kaspi-price-list.js'
+import { suggestKaspiAttributes } from './ai-attributes.js'
+import { attributeLabelRu, loadClassificationAttributes, normalizeKaspiAttributeCode, validateClassificationAttributes } from './kaspi-classification.js'
 
 export const taobaoRouter = Router()
 
 const BOOKMARKLET_TTL = 1000 * 60 * 60 * 24 * 365
 const KASPI_BASE = 'https://kaspi.kz'
+
+function aiSettingFor(userId) {
+  return find('aiSettings', (row) => row.userId === userId) || null
+}
 
 function publicProduct(row) {
   const { userId, ...rest } = row
@@ -47,7 +54,7 @@ function safeOrigin(value) {
 }
 
 function bookmarkletUrls(req) {
-  const frontendOrigin = safeOrigin(req.get('origin')) || 'http://127.0.0.1:5175'
+  const frontendOrigin = safeOrigin(process.env.PUBLIC_BASE_URL) || safeOrigin(req.get('origin')) || 'http://127.0.0.1:5175'
   const appUrl = `${frontendOrigin}/taobao`
   const api = new URL(frontendOrigin)
   if (/^517\d$/.test(api.port)) api.port = process.env.PORT || '8787'
@@ -94,21 +101,47 @@ function publicBaseUrl(req) {
   return `${protocol}://${host}`
 }
 
-function productForKaspi(req, product) {
+function cleanKaspiAttributeCode(value = '') {
+  return normalizeKaspiAttributeCode(value)
+}
+
+function kaspiAttributes(product) {
+  const seen = new Set()
+  return (Array.isArray(product.attributes) ? product.attributes : [])
+    .map((attribute, index) => ({ ...attribute, _uiIndex: index }))
+    .filter((attribute) => !/^предзаказ$/i.test(String(attribute?.code || '').trim()))
+    .filter((attribute) => !/^срок доставки/i.test(String(attribute?.code || '').trim()))
+    .filter((attribute) => !isPlatformMetadata(attribute?.code, attribute?.value))
+    .map((attribute) => ({ ...attribute, code: cleanKaspiAttributeCode(attribute?.code), value: String(attribute?.value ?? '').trim() }))
+    .filter((attribute) => {
+      if (!attribute.code || !attribute.value) return false
+      const key = `${attribute.code.toLowerCase()}|${attribute.value.toLowerCase()}`
+      if (seen.has(key)) return false
+      seen.add(key)
+      return true
+    })
+}
+
+async function productForKaspi(req, store, product) {
   const base = publicBaseUrl(req)
   const images = normalizeImages(product.images).map((image) => ({
     url: image.url.startsWith('/') ? `${base}${image.url}` : image.url,
   }))
-  const attributes = (Array.isArray(product.attributes) ? product.attributes : [])
-    .filter((attribute) => !/^предзаказ$/i.test(String(attribute?.code || '').trim()))
-    .filter((attribute) => !/^срок доставки/i.test(String(attribute?.code || '').trim()))
-    .filter((attribute) => !isPlatformMetadata(attribute?.code, attribute?.value))
+  const sourceAttributes = kaspiAttributes(product)
+  let attributes = sourceAttributes.map(({ _uiIndex, ...attribute }) => attribute)
+  let attributeDefinitions = []
+  let attributeValidationIssues = []
+  if (store?.token && /^Master\s*-/i.test(String(product.category || '').trim())) {
+    attributeDefinitions = await loadClassificationAttributes(store.token, product.category)
+    const validation = validateClassificationAttributes(sourceAttributes, attributeDefinitions)
+    attributes = validation.attributes
+    attributeValidationIssues = validation.issues
+  }
   const payload = {
     sku: String(product.sku || '').trim(),
     title: sanitizeProductTitle(product.title),
     brand: String(product.brand || '').trim(),
     category: String(product.category || '').trim(),
-    price: Math.max(0, Math.round(Number(product.salePrice ?? product.price) || 0)),
     description: sanitizeDescription(product.description),
     attributes,
     images,
@@ -116,7 +149,7 @@ function productForKaspi(req, product) {
   if (!payload.description) delete payload.description
   if (!payload.attributes.length) delete payload.attributes
   if (!payload.images.length) delete payload.images
-  return payload
+  return { payload, attributeDefinitions, attributeValidationIssues }
 }
 
 function taobaoIdentity(product = {}) {
@@ -126,7 +159,10 @@ function taobaoIdentity(product = {}) {
   try {
     const url = new URL(String(source || ''))
     url.hash = ''
-    const itemId = url.searchParams.get('id') || url.searchParams.get('itemId')
+    const itemId = url.searchParams.get('id')
+      || url.searchParams.get('itemId')
+      || url.searchParams.get('offerId')
+      || url.pathname.match(/\/offer\/(\d{6,})\.html/i)?.[1]
     return itemId ? `product:${itemId}` : `url:${url.origin}${url.pathname}`
   } catch {
     return null
@@ -210,6 +246,66 @@ function validationMessages(resultResponse) {
     .slice(0, 8)
 }
 
+function attributeIssueAdvice(field, detail = '') {
+  const text = String(detail || '').toLowerCase()
+  if (field === 'code' && /regex|pattern|match/.test(text)) {
+    return 'Код характеристики не проходит формат Kaspi. Удалите эту строку или выберите официальный код из выпадающего списка категории.'
+  }
+  if (field === 'code') return 'Код должен быть точным кодом из справочника Kaspi для выбранной категории.'
+  if (/required|mandatory|обязател/.test(text)) return 'Заполните значение обязательной характеристики.'
+  return 'Проверьте значение характеристики и используйте формат, который ожидает Kaspi.'
+}
+
+function fullAttributeIndex(productAttributes = [], target = {}, targetPosition = 0) {
+  let matched = -1
+  for (let index = 0, sentIndex = 0; index < productAttributes.length; index += 1) {
+    const attribute = productAttributes[index]
+    if (/^предзаказ$/i.test(String(attribute?.code || '').trim()) || /^срок доставки/i.test(String(attribute?.code || '').trim())) continue
+    if (isPlatformMetadata(attribute?.code, attribute?.value)) continue
+    const code = cleanKaspiAttributeCode(attribute?.code)
+    const value = String(attribute?.value ?? '').trim()
+    if (sentIndex === targetPosition) matched = index
+    if (code === target.code && value === target.value) return index
+    sentIndex += 1
+  }
+  return matched
+}
+
+function attributeIssues(messages = [], product = {}, sentAttributes = null) {
+  const text = messages.join('\n')
+  const attrs = Array.isArray(product.attributes) ? product.attributes : []
+  const sentAttrs = Array.isArray(sentAttributes) && sentAttributes.length
+    ? sentAttributes.map((attribute) => ({ ...attribute }))
+    : kaspiAttributes(product)
+  const issues = []
+  const seen = new Set()
+  const re = /(?:\$\[\d+\]\.)?attributes\[(\d+)\]\.(code|value)\s*:\s*([\s\S]*?)(?=(?:\s*\$\[\d+\]\.attributes\[\d+\]\.)|$)/gi
+  for (const match of text.matchAll(re)) {
+    const sentIndex = Number(match[1])
+    const field = match[2]
+    const detail = String(match[3] || '').replace(/\s+/g, ' ').trim().slice(0, 360)
+    const attribute = sentAttrs[sentIndex] || {}
+    const uiIndex = fullAttributeIndex(attrs, attribute, sentIndex)
+    const key = `${sentIndex}|${field}|${attribute.code || ''}|${detail}`
+    if (seen.has(key)) continue
+    seen.add(key)
+    issues.push({
+      kind: field === 'code' ? 'unknown_code' : 'invalid_value',
+      action: field === 'code' ? 'delete' : 'fill',
+      path: `attributes[${sentIndex}].${field}`,
+      index: sentIndex,
+      uiIndex,
+      field,
+      code: attribute.code || '',
+      value: attribute.value || '',
+      labelRu: attributeLabelRu(attribute.code || ''),
+      detail,
+      advice: attributeIssueAdvice(field, detail),
+    })
+  }
+  return issues.slice(0, 8)
+}
+
 function normalizeSearchText(value = '') {
   return String(value || '').toLowerCase().replace(/[^a-zа-я0-9]+/gi, ' ').replace(/\s+/g, ' ').trim()
 }
@@ -248,6 +344,7 @@ async function findPublishedProduct(store, product) {
 
 function recommendationFor(reason = '') {
   const text = String(reason).toLowerCase()
+  if (/attributes\[\d+\]\.code|does not match.*regex|regex pattern/.test(text)) return 'Kaspi отклонил код характеристики. Удалите подсвеченные строки или замените их точными кодами из справочника Kaspi.'
   if (/category|категор/.test(text)) return 'Укажите код категории из справочника Kaspi, а не произвольное название.'
   if (/brand|бренд|manufacturer/.test(text)) return 'Проверьте написание бренда. Для товара без бренда используйте допустимое Kaspi значение из схемы категории.'
   if (/attribute|характерист|атрибут|property/.test(text)) return 'Заполните обязательные характеристики выбранной категории и используйте их точные коды Kaspi.'
@@ -272,6 +369,7 @@ function importView(row) {
   const skipped = Number(resultResponse?.skipped || 0)
   const validation = validationMessages(resultResponse)
   const messages = issueMessages({ localError: row.localError, details: row.errorDetails, result: resultResponse }).concat(validation)
+  const attrIssues = attributeIssues(messages, product, row.sentAttributes)
   const rawReason = messages.join(' ') || (errors || skipped ? `Kaspi отклонил товар: ошибок ${errors}, пропущено ${skipped}.` : '')
   const connectionReason = row.syncError === 'store_not_found'
     ? 'Подключённый ранее магазин отключён от платформы.'
@@ -285,14 +383,20 @@ function importView(row) {
   const publishedProduct = publicProductView(row.publishedProduct)
   const published = importFinished && !!publishedProduct?.link
   const state = rejected ? 'rejected' : published ? 'published' : importFinished ? 'verifying' : 'processing'
-  const reason = rejected ? (connectionReason || rawReason || 'Kaspi не принял товар. Детальная причина не была передана.') : null
+  const reason = rejected
+    ? (connectionReason || (attrIssues.length
+      ? `Исправьте характеристики товара: найдено ошибок ${attrIssues.length}. Откройте карточку — нужные поля будут подсвечены.`
+      : rawReason || 'Kaspi не принял товар. Детальная причина не была передана.'))
+    : null
   return {
     id: row.id,
     code: row.code || null,
     state,
     technicalStatus: resultState || statusCode || null,
     reason,
+    technicalReason: rejected && rawReason && rawReason !== reason ? rawReason : null,
     recommendation: rejected ? recommendationFor(reason) : null,
+    attributeIssues: attrIssues,
     productLink: publishedProduct?.link || null,
     publishedProduct,
     publicationCheckedAt: row.publicationCheckedAt || null,
@@ -302,7 +406,7 @@ function importView(row) {
   }
 }
 
-function preorderView(productRow, importRow, attempts, userId) {
+function preorderView(productRow, importRow, attempts, userId, req = null) {
   const importedProduct = importRow?.products?.[0] || productRow.product?.draft || {}
   const parsed = productRow.product || {}
   const linkedStoreId = importRow?.storeId || productRow.preferredStoreId
@@ -310,7 +414,7 @@ function preorderView(productRow, importRow, attempts, userId) {
   const firstImage = importedProduct.images?.[0]?.url || importedProduct.images?.[0] || parsed.images?.[0] || null
   return {
     id: productRow.id,
-    title: importedProduct.title || parsed.titleRu || parsed.title || importedProduct.sku || 'Товар Taobao',
+    title: importedProduct.title || parsed.titleRu || parsed.title || importedProduct.sku || (String(parsed.source || '').startsWith('1688') ? 'Товар 1688' : 'Товар Taobao'),
     sku: importedProduct.sku || '',
     image: firstImage,
     price: Number(importedProduct.salePrice ?? importedProduct.price ?? parsed.priceKzt ?? 0) || 0,
@@ -318,6 +422,7 @@ function preorderView(productRow, importRow, attempts, userId) {
     deliveryDays: normalizePreorderDays(importedProduct.deliveryDays),
     stock: importedProduct.stock ?? importedProduct.quantity ?? null,
     store: store ? { id: store.id, name: store.name, merchantId: store.merchantId, hasToken: !!store.token } : null,
+    priceList: store ? preorderPriceListSummary(req, store) : importRow?.priceList || null,
     import: importView(importRow) || {
       id: null,
       code: null,
@@ -325,6 +430,7 @@ function preorderView(productRow, importRow, attempts, userId) {
       technicalStatus: null,
       reason: null,
       recommendation: null,
+      attributeIssues: [],
       createdAt: null,
       checkedAt: null,
       attempt: 0,
@@ -335,7 +441,7 @@ function preorderView(productRow, importRow, attempts, userId) {
   }
 }
 
-function listPreorders(userId) {
+function listPreorders(userId, req = null) {
   const rows = filter('taobaoProducts', (row) => row.userId === userId)
   const imports = filter('imports', (row) => row.userId === userId && row.taobaoProductId)
   const latest = latestTaobaoImports(userId)
@@ -356,20 +462,22 @@ function listPreorders(userId) {
       seen.add(identity)
       return true
     })
-    .map((row) => preorderView(row, latest.get(row.id), attemptCounts[row.id] || 0, userId))
+    .map((row) => preorderView(row, latest.get(row.id), attemptCounts[row.id] || 0, userId, req))
     .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))
 }
 
-function preorderDetail(productRow, userId) {
+function preorderDetail(productRow, userId, req = null) {
   const imports = filter('imports', (row) => row.userId === userId && row.taobaoProductId === productRow.id)
     .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0))
   const latest = imports[0] || null
   const fallback = latest?.products?.[0] || {}
   const product = mergeProduct(productRow, productRow.product?.draft || fallback)
+  const linkedStoreId = latest?.storeId || productRow.preferredStoreId || null
+  const linkedStore = linkedStoreId && find('stores', (row) => row.id === linkedStoreId && row.userId === userId)
   return {
-    ...preorderView(productRow, latest, imports.length, userId),
+    ...preorderView(productRow, latest, imports.length, userId, req),
     product,
-    storeId: latest?.storeId || productRow.preferredStoreId || null,
+    storeId: linkedStore?.id || null,
     source: {
       url: canonicalTaobaoUrl(productRow.product?.sourceUrl || productRow.product?.finalUrl) || null,
       title: productRow.product?.titleRu || productRow.product?.title || null,
@@ -411,18 +519,32 @@ async function syncImport(row, userId) {
 }
 
 function missingRequiredFields(product = {}) {
-  return ['sku', 'title', 'brand', 'category'].filter((field) => !String(product[field] || '').trim())
-    .concat(Number(product.salePrice ?? product.price) > 0 ? [] : ['price'])
+  const missing = ['sku', 'title', 'brand', 'category'].filter((field) => !String(product[field] || '').trim())
+  const days = Number(product.deliveryDays ?? product.preorderDays ?? product.preOrderDays)
+  if (!(Number(product.salePrice ?? product.price) > 0)) missing.push('price')
+  if (!(Number(product.stock ?? product.quantity) > 0)) missing.push('stock')
+  if (!Array.isArray(product.warehouses) || !product.warehouses.length) missing.push('warehouses')
+  if (!Number.isFinite(days) || days < 1 || days > MAX_PREORDER_DAYS) missing.push('deliveryDays')
+  if (!normalizeImages(product.images).length) missing.push('images')
+  return missing
 }
 
 async function publishTaobaoProduct(req, res, { productRow, storeId, sourceProduct }) {
   const store = find('stores', (row) => row.id === storeId && row.userId === req.user.id)
   if (!store) return res.status(404).json({ error: 'store_not_found' })
   if (!store.token) return res.status(400).json({ error: 'no_token' })
+  ensurePriceListFeedKey(store)
 
   const product = mergeProduct(productRow, sourceProduct || {})
   const missing = missingRequiredFields(product)
-  if (missing.length) return res.status(400).json({ error: 'missing_product_fields', missing, draft: product })
+  if (missing.length) return res.status(400).json({ error: 'missing_preorder_fields', missing, draft: product, maxPreorderDays: MAX_PREORDER_DAYS })
+  if (!/^Master\s*-/i.test(String(product.category || '').trim())) {
+    return res.status(400).json({
+      error: 'bad_category',
+      field: 'category',
+      message: 'Выберите официальную категорию Kaspi из списка.',
+    })
+  }
 
   const attempt = importsForProduct(req.user.id, productRow.id).length + 1
   update('taobaoProducts', productRow.id, {
@@ -433,12 +555,35 @@ async function publishTaobaoProduct(req, res, { productRow, storeId, sourceProdu
   })
 
   try {
-    const result = await kaspi.merchantImportProducts(store.token, [productForKaspi(req, product)])
+    const { payload: kaspiProduct, attributeDefinitions, attributeValidationIssues } = await productForKaspi(req, store, product)
+    if (attributeValidationIssues.length) {
+      return res.status(400).json({
+        error: 'attribute_validation_failed',
+        issues: attributeValidationIssues,
+        draft: product,
+        mandatoryAttributes: attributeDefinitions.filter((attribute) => attribute.mandatory),
+      })
+    }
+    const mandatoryAttributes = attributeDefinitions.filter((attribute) => attribute.mandatory)
+    if (mandatoryAttributes.length && (!Array.isArray(kaspiProduct.attributes) || !kaspiProduct.attributes.length)) {
+      return res.status(400).json({
+        error: 'missing_preorder_fields',
+        missing: ['attributes'],
+        draft: product,
+        mandatoryAttributes,
+        maxPreorderDays: MAX_PREORDER_DAYS,
+      })
+    }
+    const result = await kaspi.merchantImportProducts(store.token, [kaspiProduct])
     const saved = insert('imports', {
       id: uid(), userId: req.user.id, storeId: store.id, taobaoProductId: productRow.id,
-      code: result?.code || null, status: result?.status || null, products: [product], attempt, createdAt: Date.now(),
+      code: result?.code || null, status: result?.status || null, products: [product],
+      sentAttributes: kaspiProduct.attributes || [], attempt, publicationMode: 'preorder_price_list', createdAt: Date.now(),
     })
-    return res.json({ ok: true, preorder: preorderView(productRow, saved, attempt, req.user.id), import: saved, result })
+    const priceList = preorderPriceListSummary(req, store)
+    update('imports', saved.id, { priceList })
+    saved.priceList = priceList
+    return res.json({ ok: true, preorder: preorderView(productRow, saved, attempt, req.user.id, req), import: saved, result, priceList })
   } catch (error) {
     const failed = insert('imports', {
       id: uid(), userId: req.user.id, storeId: store.id, taobaoProductId: productRow.id,
@@ -455,7 +600,175 @@ async function publishTaobaoProduct(req, res, { productRow, storeId, sourceProdu
 }
 
 function bookmarklet(key, { endpoint, appUrl, appOrigin } = bookmarkletUrls({ get: () => null })) {
-  const js = `(async()=>{const K=${JSON.stringify(key)},E=${JSON.stringify(endpoint)},A=${JSON.stringify(appUrl)},O=${JSON.stringify(appOrigin)},C=s=>(s||'').replace(/\\s+/g,' ').trim();try{const imgs=[...document.images].map(i=>i.currentSrc||i.src).filter(u=>/alicdn|taobao|tmall|tbcdn/i.test(u||''));const specs=[];document.querySelectorAll('li,span,p,div,dt,dd').forEach(el=>{const t=C(el.innerText);if(t.length<3||t.length>140)return;const m=t.match(/^([^:：]{1,36})[:：]\\s*(.{1,96})$/);if(m)specs.push({key:C(m[1]),value:C(m[2])});});const body=C(document.body.innerText);const pm=body.match(/[¥￥]\\s*([0-9]+(?:\\.[0-9]+)?)/);const p={sourceUrl:location.href,title:document.querySelector('meta[property="og:title"]')?.content||document.title,priceCny:pm?Number(pm[1]):0,images:[...new Set(imgs)].slice(0,30),specs:[...new Map(specs.map(s=>[s.key+'|'+s.value,s])).values()].slice(0,40)};const w=window.open(A+'?browser=1','_blank');if(!w)throw new Error('Разрешите всплывающие окна для Taobao');const m={type:'KX_TAOBAO_PAYLOAD',key:K,payload:p};let n=0;const send=()=>{try{w.postMessage(m,O)}catch(e){}if(++n>=24)clearInterval(timer)};const timer=setInterval(send,500);send();alert('Товар отправляется в Kaspi X-Ray. Если вкладка открылась, дождитесь загрузки товара.');}catch(e){alert('Не удалось отправить в Kaspi X-Ray: '+e.message+'\\nОткройте платформу на этом устройстве и создайте закладку заново.');}})()`
+  const cfg = JSON.stringify({ key, endpoint, appUrl, appOrigin })
+  const js = `
+(async()=>{
+  const CFG=${cfg};
+  const C=(s)=>String(s||'').replace(/\\s+/g,' ').trim();
+  const U=(raw)=>{
+    let u=String(raw||'').replace(/\\\\\\//g,'/').trim();
+    if(!u)return '';
+    if(/^img\\//i.test(u))u='https://cbu01.alicdn.com/'+u;
+    if(u.startsWith('//'))u='https:'+u;
+    if(u.startsWith('http://'))u='https://'+u.slice(7);
+    try{const x=new URL(u,location.href);x.search='';return x.href}catch(e){return ''}
+  };
+  const at=(obj,path)=>path.split('.').reduce((acc,key)=>acc&&acc[key],obj);
+  const deepFind=(root,names)=>{
+    const wanted=new Set(names);
+    const queue=[root].filter(Boolean);
+    const seen=new Set();
+    let steps=0;
+    while(queue.length&&steps++<2500){
+      const item=queue.shift();
+      if(!item||typeof item!=='object'||seen.has(item))continue;
+      seen.add(item);
+      for(const [key,value] of Object.entries(item)){
+        if(wanted.has(key)&&value!=null&&typeof value!=='object'&&C(value))return value;
+        if(value&&typeof value==='object')queue.push(value);
+      }
+    }
+    return '';
+  };
+  const scoreModel=(obj)=>{
+    if(!obj||typeof obj!=='object')return 0;
+    let score=0;
+    if(C(obj.subject))score+=8;
+    if(Array.isArray(obj.mainImageList))score+=5;
+    if(obj.tradeModel)score+=4;
+    if(obj.offerIDatacenterSellInfo)score+=4;
+    if(Array.isArray(obj.skuProps))score+=3;
+    if(C(obj.leafCategoryName))score+=2;
+    return score;
+  };
+  const findModel=(root)=>{
+    const starts=[
+      at(root,'result.global.globalData.model'),
+      at(root,'result.data.model'),
+      at(root,'result.data'),
+      at(root,'global.globalData.model'),
+      root
+    ].filter(Boolean);
+    let best={},bestScore=0;
+    const queue=[...starts];
+    const seen=new Set();
+    let steps=0;
+    while(queue.length&&steps++<2500){
+      const item=queue.shift();
+      if(!item||typeof item!=='object'||seen.has(item))continue;
+      seen.add(item);
+      const score=scoreModel(item);
+      if(score>bestScore){best=item;bestScore=score}
+      Object.values(item).forEach((value)=>{if(value&&typeof value==='object')queue.push(value)});
+    }
+    return bestScore?best:(starts[0]||{});
+  };
+  const addSpec=(list,key,value)=>{
+    key=C(key).replace(/[:：]+$/,'');
+    value=C(value);
+    if(!key||!value||key.length>60||value.length>180)return;
+    if(/http|img|script|style|function|undefined|null/i.test(key+value))return;
+    list.push({key,value});
+  };
+  const addImage=(set,raw)=>{
+    const url=U(raw);
+    if(url&&/alicdn|taobao|tmall|tbcdn|1688/i.test(url))set.add(url);
+  };
+  const collectImages=(set,obj)=>{
+    const queue=[obj].filter(Boolean);
+    const seen=new Set();
+    let steps=0;
+    while(queue.length&&steps++<1500&&set.size<40){
+      const item=queue.shift();
+      if(!item)return;
+      if(typeof item==='string'){addImage(set,item);continue}
+      if(typeof item!=='object'||seen.has(item))continue;
+      seen.add(item);
+      Object.entries(item).forEach(([key,value])=>{
+        if(/image|img|pic|uri|url/i.test(key))addImage(set,value);
+        if(value&&typeof value==='object')queue.push(value);
+      });
+    }
+  };
+  const priceValue=(value)=>{
+    if(typeof value==='number')return value;
+    const match=String(value||'').match(/([0-9]+(?:\\.[0-9]+)?)/);
+    return match?Number(match[1]):0;
+  };
+  try{
+    const root=window.context||window.__INIT_DATA__||window.__INITIAL_STATE__||{};
+    const model=findModel(root);
+    const sellerNames=[
+      at(model,'sellerModel.companyName'),
+      at(model,'sellerModel.shopName'),
+      at(model,'sellerModel.loginId'),
+      deepFind(root,['companyName','shopName','loginId'])
+    ].map(C).filter(Boolean);
+    const subject=C(model.subject||deepFind(root,['subject','offerTitle','productTitle']));
+    const titleCandidates=[
+      subject,
+      C(model.offerTitle||model.title),
+      C(at(model,'offerBaseInfo.subject')),
+      C(document.querySelector('meta[property="og:title"]')?.content),
+      C(document.querySelector('h1')?.innerText),
+      C(document.title)
+    ];
+    let title=titleCandidates.find((item)=>item&&!sellerNames.includes(item))||titleCandidates.find(Boolean)||'';
+    if(sellerNames.includes(title)&&subject)title=subject;
+    const imgs=new Set();
+    collectImages(imgs,model.mainImageList||model);
+    collectImages(imgs,model.skuProps||[]);
+    [...document.images].forEach((img)=>[img.currentSrc,img.src,img.dataset&&img.dataset.src,img.dataset&&img.dataset.lazyload].forEach((value)=>addImage(imgs,value)));
+    [...document.querySelectorAll('[style]')].forEach((el)=>addImage(imgs,(el.getAttribute('style')||'').match(/url\\(["']?([^"')]+)["']?\\)/)?.[1]));
+    const specs=[];
+    addSpec(specs,'类目',model.leafCategoryName||deepFind(root,['leafCategoryName']));
+    Object.entries(model.offerIDatacenterSellInfo||{}).forEach(([key,value])=>addSpec(specs,key,value));
+    (Array.isArray(model.skuProps)?model.skuProps:[]).forEach((prop)=>{
+      const values=(Array.isArray(prop.value)?prop.value:[]).map((item)=>C(item&&item.name)).filter(Boolean);
+      if(values.length)addSpec(specs,prop.prop,[...new Set(values)].slice(0,8).join(', '));
+    });
+    document.querySelectorAll('li,span,p,div,dt,dd').forEach((el)=>{
+      const text=C(el.innerText);
+      if(text.length<3||text.length>180)return;
+      const match=text.match(/^([^:：]{1,42})[:：]\\s*(.{1,120})$/);
+      if(match)addSpec(specs,match[1],match[2]);
+    });
+    const body=C(document.body.innerText);
+    const priceCandidates=[
+      at(model,'tradeModel.priceDisplay'),
+      at(model,'tradeModel.minPrice'),
+      at(model,'tradeModel.offerMinPrice'),
+      at(model,'tradeModel.offerPriceModel.currentPrices.0.price'),
+      deepFind(root,['priceDisplay','minPrice','offerMinPrice','priceText']),
+      (body.match(/[¥￥]\\s*([0-9]+(?:\\.[0-9]+)?)/)||[])[1]
+    ];
+    const priceCny=priceCandidates.map(priceValue).find((n)=>n>0&&n<1000000)||0;
+    const L=new URL(location.href);
+    const id=L.searchParams.get('id')||L.searchParams.get('itemId')||L.searchParams.get('offerId')||(L.pathname.match(/\\/offer\\/(\\d{6,})\\.html/i)||[])[1]||C(model.offerId||model.offerID||deepFind(root,['offerId','offerID']));
+    const dedupSpecs=[...new Map(specs.filter((s)=>s.key&&s.value).map((s)=>[s.key+'|'+s.value,s])).values()].slice(0,40);
+    const p={sourceUrl:location.href,productId:id,title,subject,sellerName:sellerNames[0]||'',priceCny,images:[...imgs].slice(0,30),specs:dedupSpecs};
+    try{
+      const r=await fetch(CFG.endpoint,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key:CFG.key,payload:p}),credentials:'omit'});
+      if(r.ok){
+        const j=await r.json(),pid=j&&j.product&&j.product.id;
+        window.open(CFG.appUrl+(pid?'?import='+encodeURIComponent(pid):'?browser=1'),'_blank');
+        alert('Товар отправлен в Kaspi X-Ray.');
+        return;
+      }
+    }catch(e){}
+    const m={type:'KX_TAOBAO_PAYLOAD',key:CFG.key,payload:p};
+    const w=window.open(CFG.appUrl+'?browser=1&handoff=1','_blank');
+    if(!w)throw new Error('Разрешите всплывающие окна для Taobao/1688');
+    try{w.name='KX_TAOBAO_PAYLOAD:'+encodeURIComponent(JSON.stringify(m))}catch(e){}
+    let n=0;
+    const send=()=>{try{w.postMessage(m,CFG.appOrigin)}catch(e){}if(++n>=120)clearInterval(timer)};
+    const timer=setInterval(send,500);
+    send();
+    alert('Товар отправляется в Kaspi X-Ray. Если вкладка открылась, дождитесь загрузки товара.');
+  }catch(e){
+    alert('Не удалось отправить в Kaspi X-Ray: '+e.message+'\\nОткройте платформу на этом устройстве и создайте закладку заново.');
+  }
+})()`
   return `javascript:${encodeURIComponent(js)}`
 }
 
@@ -511,7 +824,7 @@ taobaoRouter.post('/browser-payload', async (req, res) => {
 
 /** GET /api/taobao/preorders — products already sent from Taobao to Kaspi. */
 taobaoRouter.get('/preorders', (req, res) => {
-  res.json({ preorders: listPreorders(req.user.id) })
+  res.json({ preorders: listPreorders(req.user.id, req) })
 })
 
 /** GET /api/taobao/preorders/:id — editable preorder card. */
@@ -523,7 +836,7 @@ taobaoRouter.get('/preorders/:id', async (req, res) => {
   if (latest?.code && (state === 'processing' || state === 'verifying')) {
     await syncImport(latest, req.user.id).catch(() => null)
   }
-  res.json({ preorder: preorderDetail(row, req.user.id) })
+  res.json({ preorder: preorderDetail(row, req.user.id, req) })
 })
 
 /** PUT /api/taobao/preorders/:id — save editable Kaspi draft. */
@@ -543,7 +856,35 @@ taobaoRouter.put('/preorders/:id', (req, res) => {
     draftEditedAt: Date.now(),
     updatedAt: Date.now(),
   })
-  res.json({ ok: true, preorder: preorderDetail(row, req.user.id) })
+  res.json({ ok: true, preorder: preorderDetail(row, req.user.id, req) })
+})
+
+/** POST /api/taobao/preorders/:id/ai-attributes — suggest required Kaspi attribute values. */
+taobaoRouter.post('/preorders/:id/ai-attributes', async (req, res) => {
+  const row = find('taobaoProducts', (item) => item.id === req.params.id && item.userId === req.user.id)
+  if (!row) return res.status(404).json({ error: 'not_found' })
+  const settings = aiSettingFor(req.user.id) || {}
+  const provider = ['openai', 'gemini'].includes(req.body?.provider) ? req.body.provider : settings.provider || 'openai'
+  const apiKey = provider === 'gemini'
+    ? settings.geminiKey || process.env.GEMINI_API_KEY
+    : settings.openaiKey || process.env.OPENAI_API_KEY
+  if (!apiKey) return res.status(400).json({ error: 'ai_not_configured', provider })
+  const attributes = Array.isArray(req.body?.attributes) ? req.body.attributes : []
+  if (!attributes.length) return res.status(400).json({ error: 'no_attributes' })
+  const draft = mergeProduct(row, req.body?.product || row.product?.draft || {})
+  try {
+    const result = await suggestKaspiAttributes({
+      provider,
+      apiKey,
+      userId: req.user.id,
+      product: { ...row.product, ...draft, draft, specs: row.product?.specs || [] },
+      attributes,
+    })
+    res.json({ ok: true, provider, ...result })
+  } catch (error) {
+    const code = error.code || 'ai_attributes_failed'
+    res.status(error.status || 502).json({ error: code, details: error.details || null })
+  }
 })
 
 /** POST /api/taobao/preorders/:id/photos — upload a photo into the draft. */
@@ -555,7 +896,7 @@ taobaoRouter.post('/preorders/:id/photos', (req, res) => {
     const current = mergeProduct(row, row.product?.draft || {})
     const product = mergeProduct(row, { ...current, images: [...current.images, { url }] })
     update('taobaoProducts', row.id, { product: { ...row.product, draft: product }, draftEditedAt: Date.now(), updatedAt: Date.now() })
-    res.json({ ok: true, image: { url }, preorder: preorderDetail(row, req.user.id) })
+    res.json({ ok: true, image: { url }, preorder: preorderDetail(row, req.user.id, req) })
   } catch (error) {
     const code = error.code || 'image_upload_failed'
     res.status(code === 'image_too_large' ? 413 : 400).json({ error: code })
@@ -582,7 +923,7 @@ taobaoRouter.post('/preorders/refresh', async (req, res) => {
     })
     .slice(0, 20)
   await Promise.all(latest.map(([, row]) => syncImport(row, req.user.id)))
-  res.json({ preorders: listPreorders(req.user.id), refreshed: latest.length })
+  res.json({ preorders: listPreorders(req.user.id, req), refreshed: latest.length })
 })
 
 /** POST /api/taobao/preorders/:id/retry — repeat the latest Kaspi publication. */
@@ -631,12 +972,13 @@ taobaoRouter.get('/:id/images.zip', async (req, res) => {
   const row = find('taobaoProducts', (x) => x.id === req.params.id && x.userId === req.user.id)
   if (!row) return res.status(404).json({ error: 'not_found' })
   const urls = row.product?.images || []
+  const prefix = String(row.product?.source || '').startsWith('1688') ? '1688' : 'taobao'
   const files = []
   for (let i = 0; i < Math.min(urls.length, 20); i++) {
     try {
       const img = await taobao.fetchImage(urls[i])
       if (!img?.data?.length) continue
-      files.push({ name: `taobao-${String(i + 1).padStart(2, '0')}.${extFromContentType(img.contentType)}`, data: img.data })
+      files.push({ name: `${prefix}-${String(i + 1).padStart(2, '0')}.${extFromContentType(img.contentType)}`, data: img.data })
     } catch {
       /* skip failed image */
     }
@@ -644,7 +986,7 @@ taobaoRouter.get('/:id/images.zip', async (req, res) => {
   if (!files.length) return res.status(502).json({ error: 'images_unavailable' })
   const zip = makeZip(files)
   res.setHeader('content-type', 'application/zip')
-  res.setHeader('content-disposition', `attachment; filename="taobao-${row.product?.productId || row.id}.zip"`)
+  res.setHeader('content-disposition', `attachment; filename="${prefix}-${row.product?.productId || row.id}.zip"`)
   res.send(zip)
 })
 

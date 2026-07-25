@@ -245,6 +245,18 @@ export async function merchantImportSchema(token) {
   return merchantProductApi(token, '/import/schema')
 }
 
+export async function merchantClassificationCategories(token) {
+  return merchantProductApi(token, '/classification/categories')
+}
+
+export async function merchantClassificationAttributes(token, category) {
+  return merchantProductApi(token, `/classification/attributes${qs({ c: category })}`)
+}
+
+export async function merchantClassificationAttributeValues(token, category, attribute) {
+  return merchantProductApi(token, `/classification/attribute/values${qs({ c: category, a: attribute })}`)
+}
+
 export async function merchantImportProducts(token, products) {
   const payload = Array.isArray(products) ? products : [products]
   return merchantProductApi(token, '/import', { method: 'POST', body: payload })

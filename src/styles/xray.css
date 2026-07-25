@@ -411,6 +411,13 @@
   gap: 18px;
   align-items: center;
 }
+.store-head-actions {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
 .sh-logo {
   width: 60px;
   height: 60px;
@@ -423,6 +430,19 @@
 }
 .sh-logo .msym {
   font-size: 30px;
+}
+@media (max-width: 760px) {
+  .store-head {
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
+  .store-head-actions {
+    width: 100%;
+    justify-content: stretch;
+  }
+  .store-head-actions .btn {
+    flex: 1 1 180px;
+  }
 }
 
 /* calibration widget */

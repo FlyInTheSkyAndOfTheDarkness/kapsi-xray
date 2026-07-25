@@ -17,6 +17,10 @@ import { UPLOAD_DIR } from './uploads.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const app = express()
+app.use((req, res, next) => {
+  res.setHeader('Access-Control-Allow-Private-Network', 'true')
+  next()
+})
 app.use(cors())
 app.use(express.json({ limit: '12mb' }))
 app.use('/uploads', express.static(UPLOAD_DIR))

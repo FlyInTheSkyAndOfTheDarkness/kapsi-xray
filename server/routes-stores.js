@@ -4,8 +4,20 @@ import { all, find, filter, insert, update, remove, uid } from './db.js'
 import * as kaspi from './kaspi.js'
 import { estimateCard, productProfit } from './analyze.js'
 import { buildImportPayload, publicRepricer, runRepricer, sanitizeWarehouses } from './repricer.js'
+import { buildPreorderPriceListXml, ensurePriceListFeedKey, preorderPriceListSummary, storeByPreorderFeedKey } from './kaspi-price-list.js'
+import { loadClassificationAttributes } from './kaspi-classification.js'
 
 export const storesRouter = Router()
+
+storesRouter.get('/preorder-feed/:key.xml', (req, res) => {
+  const store = storeByPreorderFeedKey(String(req.params.key || '').trim())
+  if (!store) return res.status(404).type('text/plain').send('feed_not_found')
+  const feed = buildPreorderPriceListXml(store)
+  res.setHeader('content-type', 'application/xml; charset=utf-8')
+  res.setHeader('cache-control', 'no-store')
+  res.send(feed.xml)
+})
+
 storesRouter.use(requireAuth)
 
 function parseMerchantRef(input) {
@@ -55,6 +67,53 @@ function applySettings(product, settings = {}) {
     logistics: settings.logistics ?? null,
     warehouses: Array.isArray(settings.warehouses) ? settings.warehouses : [],
   }
+}
+
+function markPublicCatalog(store, status, error = null, productCount = null) {
+  const patch = { publicStatus: status, publicError: error, publicCheckedAt: Date.now() }
+  if (productCount != null) patch.productCount = productCount
+  return update('stores', store.id, patch) || store
+}
+
+function publicStore(s) {
+  return {
+    id: s.id,
+    merchantId: s.merchantId,
+    name: s.name,
+    rating: s.rating,
+    reviews: s.reviews,
+    productCount: s.productCount,
+    publicStatus: s.publicStatus || 'ok',
+    publicError: s.publicError || null,
+    publicCheckedAt: s.publicCheckedAt || null,
+    hasToken: !!s.token,
+    hasPreorderFeed: !!s.priceListFeedKey,
+    createdAt: s.createdAt,
+  }
+}
+
+function storeCatalogResponse(userId, store, products = [], truncated = false, warning = null) {
+  const preorderEntries = preorderCatalogEntries(userId, store.id)
+  const preorderById = new Map(preorderEntries.map((entry) => [entry.product.id, entry.product]))
+  const mergedProducts = products.map((product) => {
+    const preorder = preorderById.get(product.id)
+    return preorder ? { ...product, ...preorder, price: product.price || preorder.price, link: product.link || preorder.link } : { ...product, sourceType: 'regular', saleMode: 'regular' }
+  })
+  const seen = new Set(mergedProducts.map((product) => product.id))
+  preorderEntries.forEach((entry) => {
+    if (!seen.has(entry.product.id)) {
+      seen.add(entry.product.id)
+      mergedProducts.push(entry.product)
+    }
+  })
+  const settings = cogsMap(userId, store.id)
+  const rows = mergedProducts.map((p) => {
+    const product = applySettings(p, settings[p.id] || settings[p.taobaoSku])
+    const est = estimateCard(p)
+    const profit = productProfit(product, product.cost, est)
+    return { ...product, est, profit }
+  })
+  return { store: publicStore(store), products: rows, truncated, warning }
 }
 
 const listData = (json) => (Array.isArray(json?.data) ? json.data : json?.data ? [json.data] : [])
@@ -203,56 +262,143 @@ storesRouter.post('/connect', async (req, res) => {
   const mid = parseMerchantRef(req.body?.ref)
   const city = req.body?.city || kaspi.DEFAULT_CITY
   if (!mid) return res.status(400).json({ error: 'bad_ref' })
+  let store = find('stores', (s) => s.userId === req.user.id && s.merchantId === mid)
   try {
     const { products, truncated } = await kaspi.merchantProducts(mid, { city })
-    if (!products.length) return res.status(404).json({ error: 'empty' })
+    if (!products.length) {
+      const patch = {
+        name: store?.name || `Магазин #${mid}`,
+        rating: store?.rating ?? null,
+        reviews: store?.reviews ?? null,
+        productCount: store?.productCount || 0,
+        publicStatus: 'unavailable',
+        publicError: 'empty_public_catalog',
+        publicCheckedAt: Date.now(),
+      }
+      if (store) store = update('stores', store.id, patch)
+      else store = insert('stores', { id: uid(), userId: req.user.id, merchantId: mid, ...patch, token: null, createdAt: Date.now() })
+      ensurePriceListFeedKey(store)
+      return res.json({ store: publicStore(store), products: [], truncated: false, warning: 'empty_public_catalog' })
+    }
     const info = await kaspi.merchantInfo(mid, products[0].id, { city })
-    let store = find('stores', (s) => s.userId === req.user.id && s.merchantId === mid)
-    if (store) update('stores', store.id, { name: info.name, rating: info.rating, reviews: info.reviews, productCount: products.length })
-    else store = insert('stores', { id: uid(), userId: req.user.id, merchantId: mid, name: info.name, rating: info.rating, reviews: info.reviews, productCount: products.length, token: null, createdAt: Date.now() })
+    const patch = { name: info.name, rating: info.rating, reviews: info.reviews, productCount: products.length, publicStatus: 'ok', publicError: null, publicCheckedAt: Date.now() }
+    if (store) store = update('stores', store.id, patch)
+    else store = insert('stores', { id: uid(), userId: req.user.id, merchantId: mid, ...patch, token: null, createdAt: Date.now() })
+    ensurePriceListFeedKey(store)
     res.json({ store: publicStore(store), products, truncated })
   } catch (e) {
-    res.status(502).json({ error: 'kaspi_unreachable' })
+    console.warn(`[stores/connect] Kaspi public catalog unavailable for merchant ${mid}: ${e?.message || e}`)
+    const patch = {
+      name: store?.name || `Магазин #${mid}`,
+      rating: store?.rating ?? null,
+      reviews: store?.reviews ?? null,
+      productCount: store?.productCount || 0,
+      publicStatus: 'unavailable',
+      publicError: 'kaspi_unreachable',
+      publicCheckedAt: Date.now(),
+    }
+    if (store) store = update('stores', store.id, patch)
+    else store = insert('stores', { id: uid(), userId: req.user.id, merchantId: mid, ...patch, token: null, createdAt: Date.now() })
+    ensurePriceListFeedKey(store)
+    res.json({ store: publicStore(store), products: [], truncated: false, warning: 'kaspi_unreachable' })
   }
 })
-
-const publicStore = (s) => ({ id: s.id, merchantId: s.merchantId, name: s.name, rating: s.rating, reviews: s.reviews, productCount: s.productCount, hasToken: !!s.token, createdAt: s.createdAt })
 
 /** GET /api/stores — list the user's connected stores. */
 storesRouter.get('/', (req, res) => {
   res.json({ stores: filter('stores', (s) => s.userId === req.user.id).map(publicStore) })
 })
 
+function normalizeSearchText(value = '') {
+  return String(value || '').toLowerCase().replace(/[^a-zа-яё0-9]+/gi, ' ').replace(/\s+/g, ' ').trim()
+}
+
+function normalizeClassificationCategories(data) {
+  const rows = Array.isArray(data) ? data : Array.isArray(data?.data) ? data.data : []
+  const seen = new Set()
+  return rows.map((row) => {
+    const code = String(row?.code || '').trim()
+    const title = String(row?.title || row?.name || '').trim()
+    return code && title ? { code, title } : null
+  }).filter((row) => {
+    if (!row || seen.has(row.code)) return false
+    seen.add(row.code)
+    return true
+  })
+}
+
+function categorySearchScore(category, query) {
+  const q = normalizeSearchText(query)
+  if (!q) return 1
+  const title = normalizeSearchText(category.title)
+  const code = normalizeSearchText(category.code.replace(/^master\s*-\s*/i, ''))
+  const haystack = `${title} ${code}`
+  const words = q.split(' ').filter((word) => word.length > 2)
+  let score = 0
+  if (title === q || code === q) score += 100
+  if (title.includes(q)) score += 70
+  if (code.includes(q)) score += 60
+  score += words.filter((word) => haystack.includes(word)).length * 12
+  return score
+}
+
+/** GET /api/stores/:id/classification/categories — Kaspi category codes for product import. */
+storesRouter.get('/:id/classification/categories', async (req, res) => {
+  const store = find('stores', (s) => s.id === req.params.id && s.userId === req.user.id)
+  if (!store) return res.status(404).json({ error: 'not_found' })
+  if (!store.token) return res.status(400).json({ error: 'no_token' })
+  const query = String(req.query.q || '').trim()
+  const limit = Math.max(1, Math.min(80, Number(req.query.limit) || 24))
+  try {
+    const data = await kaspi.merchantClassificationCategories(store.token)
+    const ranked = normalizeClassificationCategories(data)
+      .map((category) => ({ ...category, score: categorySearchScore(category, query) }))
+      .filter((category) => !query || category.score > 0)
+      .sort((a, b) => b.score - a.score || a.title.length - b.title.length || a.title.localeCompare(b.title, 'ru'))
+    res.json({ categories: ranked.slice(0, limit).map(({ score, ...category }) => category), total: ranked.length })
+  } catch (e) {
+    res.status(e.status === 401 ? 401 : 502).json({ error: 'classification_failed', status: e.status || null })
+  }
+})
+
+/** GET /api/stores/:id/classification/attributes — Kaspi attributes for a category. */
+storesRouter.get('/:id/classification/attributes', async (req, res) => {
+  const store = find('stores', (s) => s.id === req.params.id && s.userId === req.user.id)
+  if (!store) return res.status(404).json({ error: 'not_found' })
+  if (!store.token) return res.status(400).json({ error: 'no_token' })
+  const category = String(req.query.category || req.query.c || '').trim()
+  if (!category) return res.status(400).json({ error: 'bad_category' })
+  try {
+    const attributes = await loadClassificationAttributes(store.token, category)
+    res.json({
+      category,
+      attributes,
+      mandatory: attributes.filter((attribute) => attribute.mandatory),
+    })
+  } catch (e) {
+    res.status(e.status === 401 ? 401 : 502).json({ error: 'classification_failed', status: e.status || null })
+  }
+})
+
+storesRouter.get('/:id/preorder-feed', (req, res) => {
+  const store = find('stores', (s) => s.id === req.params.id && s.userId === req.user.id)
+  if (!store) return res.status(404).json({ error: 'not_found' })
+  res.json({ feed: preorderPriceListSummary(req, store) })
+})
+
 /** GET /api/stores/:id — store + fresh catalog with estimates & profit (COGS). */
 storesRouter.get('/:id', async (req, res) => {
-  const store = find('stores', (s) => s.id === req.params.id && s.userId === req.user.id)
+  let store = find('stores', (s) => s.id === req.params.id && s.userId === req.user.id)
   if (!store) return res.status(404).json({ error: 'not_found' })
   const city = req.query.city || kaspi.DEFAULT_CITY
   try {
     const { products, truncated } = await kaspi.merchantProducts(store.merchantId, { city })
-    const preorderEntries = preorderCatalogEntries(req.user.id, store.id)
-    const preorderById = new Map(preorderEntries.map((entry) => [entry.product.id, entry.product]))
-    const mergedProducts = products.map((product) => {
-      const preorder = preorderById.get(product.id)
-      return preorder ? { ...product, ...preorder, price: product.price || preorder.price, link: product.link || preorder.link } : { ...product, sourceType: 'regular', saleMode: 'regular' }
-    })
-    const seen = new Set(mergedProducts.map((product) => product.id))
-    preorderEntries.forEach((entry) => {
-      if (!seen.has(entry.product.id)) {
-        seen.add(entry.product.id)
-        mergedProducts.push(entry.product)
-      }
-    })
-    const settings = cogsMap(req.user.id, store.id)
-    const rows = mergedProducts.map((p) => {
-      const product = applySettings(p, settings[p.id] || settings[p.taobaoSku])
-      const est = estimateCard(p)
-      const profit = productProfit(product, product.cost, est)
-      return { ...product, est, profit }
-    })
-    res.json({ store: publicStore(store), products: rows, truncated })
-  } catch {
-    res.status(502).json({ error: 'kaspi_unreachable' })
+    store = markPublicCatalog(store, 'ok', null, products.length)
+    res.json(storeCatalogResponse(req.user.id, store, products, truncated))
+  } catch (e) {
+    console.warn(`[stores/get] Kaspi public catalog unavailable for merchant ${store.merchantId}: ${e?.message || e}`)
+    store = markPublicCatalog(store, 'unavailable', 'kaspi_unreachable')
+    res.json(storeCatalogResponse(req.user.id, store, [], false, 'kaspi_unreachable'))
   }
 })
 
@@ -398,6 +544,7 @@ storesRouter.post('/:id/token', async (req, res) => {
   }
   try {
     await kaspi.merchantImportSchema(token)
+    ensurePriceListFeedKey(store)
     update('stores', store.id, { token, tokenCheckedAt: Date.now(), tokenStatus: 'ok' })
     res.json({ ok: true, hasToken: true, tokenOk: true })
   } catch (e) {

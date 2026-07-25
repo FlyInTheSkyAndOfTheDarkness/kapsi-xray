@@ -12,7 +12,7 @@ import { tenge, num, pct } from '../lib/format.js'
 export default function UnitEconomics() {
   const { t, lang } = useI18n()
   const navigate = useNavigate()
-  const { hasStore, products, loading, setCogs } = useStore()
+  const { hasStore, store, products, loading, refresh, setCogs } = useStore()
   const { feeRules } = useAppState()
   const [q, setQ] = useState('')
   const [selId, setSelId] = useState(null)
@@ -25,7 +25,31 @@ export default function UnitEconomics() {
   const [costDraft, setCostDraft] = useState('')
 
   if (!hasStore && !loading) return <div className="fade-in"><PageHead title={t('unit.title')} sub={t('unit.subtitle')} /><ConnectPrompt /></div>
-  if (!product) return <div className="fade-in"><PageHead title={t('unit.title')} sub={t('unit.subtitle')} /><div className="xray-empty card card-pad"><span className="msym spin">progress_activity</span></div></div>
+  if (!product) {
+    return (
+      <div className="fade-in">
+        <PageHead title={t('unit.title')} sub={t('unit.subtitle')} />
+        <div className="xray-empty card card-pad">
+          {loading ? (
+            <>
+              <span className="msym spin">progress_activity</span>
+              <p>{t('connect.loading')}</p>
+            </>
+          ) : (
+            <>
+              <span className="msym">inventory_2</span>
+              <p style={{ fontWeight: 700, color: 'var(--ink)', fontSize: 16 }}>{t('unit.empty_title')}</p>
+              <p>{store?.publicStatus === 'unavailable' ? t('unit.empty_public_unavailable') : t('unit.empty_text')}</p>
+              <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', justifyContent: 'center' }}>
+                <button className="btn btn-primary" onClick={refresh}><span className="msym">refresh</span>{t('unit.refresh_catalog')}</button>
+                <button className="btn btn-ghost" onClick={() => navigate('/connect')}><span className="msym">storefront</span>{t('unit.open_store')}</button>
+              </div>
+            </>
+          )}
+        </div>
+      </div>
+    )
+  }
 
   const cost = product.cost || 0
   const fees = resolveFeeRules(product, feeRules)

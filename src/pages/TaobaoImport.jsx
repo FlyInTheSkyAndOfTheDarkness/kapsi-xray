@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useI18n } from '../i18n/index.jsx'
 import { API } from '../lib/api.js'
@@ -6,6 +6,13 @@ import { exportCSV } from '../lib/csv.js'
 import { tenge, num } from '../lib/format.js'
 import { PageHead, StatCard, Card, Segmented } from '../components/ui.jsx'
 import TaobaoTabs from '../components/TaobaoTabs.jsx'
+
+function marketplaceName(product) {
+  const source = `${product?.source || ''} ${product?.sourceUrl || ''} ${product?.finalUrl || ''}`
+  return /1688/i.test(source) ? '1688' : 'Taobao'
+}
+
+const HANDOFF_PREFIX = 'KX_TAOBAO_PAYLOAD:'
 
 export default function TaobaoImport() {
   const { t } = useI18n()
@@ -22,6 +29,7 @@ export default function TaobaoImport() {
   const [browserKeyBusy, setBrowserKeyBusy] = useState(false)
   const [bookmarklet, setBookmarklet] = useState(null)
   const [notice, setNotice] = useState('')
+  const [blockedUrl, setBlockedUrl] = useState('')
   const browserPayloadRef = useRef({ busy: false, key: '' })
   const bookmarkletLinkRef = useRef(null)
 
@@ -30,11 +38,46 @@ export default function TaobaoImport() {
   const specs = product?.specs || []
   const images = product?.images || []
   const draft = product?.draft || null
+  const sourceLabel = marketplaceName(product)
 
   const loadProduct = (response, message = '') => {
     setResult(response)
     setError('')
+    setBlockedUrl('')
     setNotice(message)
+  }
+
+  const receiveBrowserPayload = useCallback(async (payload) => {
+    const dedupeKey = `${payload.sourceUrl || payload.url || ''}|${payload.title || ''}|${payload.priceCny || payload.price || ''}`
+    if (!dedupeKey.trim() || browserPayloadRef.current.busy || browserPayloadRef.current.key === dedupeKey) return
+    browserPayloadRef.current = { busy: true, key: dedupeKey }
+    setSourceMode('browser')
+    setNotice(t('taobao.browser_receiving'))
+    setError('')
+    try {
+      const response = await API.taobaoBrowserPayload(payload)
+      loadProduct(response, t('taobao.browser_loaded'))
+    } catch (requestError) {
+      setError(requestError.status === 401 ? t('taobao.err_login') : t('taobao.err_generic'))
+    } finally {
+      browserPayloadRef.current.busy = false
+    }
+  }, [t])
+
+  const cleanTaobaoUrl = (value) => {
+    try {
+      const parsed = new URL(String(value || '').trim())
+      const offerId = parsed.searchParams.get('offerId') || parsed.pathname.match(/\/offer\/(\d{6,})\.html/i)?.[1]
+      const host = parsed.hostname.toLowerCase()
+      if (host === '1688.com' || host.endsWith('.1688.com')) {
+        if (offerId) return `https://detail.1688.com/offer/${encodeURIComponent(offerId)}.html`
+      }
+      const itemId = parsed.searchParams.get('id') || parsed.searchParams.get('itemId')
+      if (itemId) return `${parsed.origin}${parsed.pathname}?id=${encodeURIComponent(itemId)}`
+    } catch {
+      /* keep original */
+    }
+    return String(value || '').trim()
   }
 
   const createBookmarklet = async () => {
@@ -67,27 +110,42 @@ export default function TaobaoImport() {
   }, [params, t])
 
   useEffect(() => {
+    if (!params.get('browser')) return undefined
+    setSourceMode('browser')
+    setNotice((current) => current || t('taobao.browser_waiting'))
+    let attempts = 0
+    const readHandoff = () => {
+      const raw = String(window.name || '')
+      if (!raw.startsWith(HANDOFF_PREFIX)) return false
+      try {
+        const message = JSON.parse(decodeURIComponent(raw.slice(HANDOFF_PREFIX.length)))
+        window.name = ''
+        if (message?.type === 'KX_TAOBAO_PAYLOAD' && message.payload) {
+          receiveBrowserPayload(message.payload)
+          return true
+        }
+      } catch {
+        window.name = ''
+      }
+      return false
+    }
+    if (readHandoff()) return undefined
+    const timer = setInterval(() => {
+      attempts += 1
+      if (readHandoff() || attempts >= 40) clearInterval(timer)
+    }, 250)
+    return () => clearInterval(timer)
+  }, [params, receiveBrowserPayload, t])
+
+  useEffect(() => {
     const onMessage = async (event) => {
       if (event.data?.type !== 'KX_TAOBAO_PAYLOAD') return
-      if (!/taobao|tmall|tb\.cn/i.test(String(event.origin || ''))) return
-      const payload = event.data.payload || {}
-      const dedupeKey = `${payload.sourceUrl || payload.url || ''}|${payload.title || ''}|${payload.priceCny || payload.price || ''}`
-      if (!dedupeKey.trim() || browserPayloadRef.current.busy || browserPayloadRef.current.key === dedupeKey) return
-      browserPayloadRef.current = { busy: true, key: dedupeKey }
-      setNotice(t('taobao.browser_receiving'))
-      setError('')
-      try {
-        const response = await API.taobaoBrowserPayload(payload)
-        loadProduct(response, t('taobao.browser_loaded'))
-      } catch (requestError) {
-        setError(requestError.status === 401 ? t('taobao.err_login') : t('taobao.err_generic'))
-      } finally {
-        browserPayloadRef.current.busy = false
-      }
+      if (!/taobao|tmall|tb\.cn|1688/i.test(String(event.origin || ''))) return
+      receiveBrowserPayload(event.data.payload || {})
     }
     window.addEventListener('message', onMessage)
     return () => window.removeEventListener('message', onMessage)
-  }, [t])
+  }, [receiveBrowserPayload])
 
   const analyze = async () => {
     if (!url.trim()) return
@@ -98,14 +156,19 @@ export default function TaobaoImport() {
       const response = await API.analyzeTaobao({ url: url.trim(), shippingCny, markupPct, rate: rate || undefined })
       loadProduct(response)
     } catch (requestError) {
-      const message = requestError.code === 'bad_url'
-        ? t('taobao.err_url')
-        : requestError.code === 'taobao_blocked'
-          ? t('taobao.err_blocked')
+      if (requestError.code === 'taobao_blocked') {
+        setBlockedUrl(cleanTaobaoUrl(url))
+        setSourceMode('browser')
+        setError(t('taobao.err_blocked_browser'))
+        setNotice(t('taobao.browser_next_step'))
+      } else {
+        const message = requestError.code === 'bad_url'
+          ? t('taobao.err_url')
           : requestError.code === 'parse_failed'
             ? t('taobao.err_parse')
             : t('taobao.err_generic')
-      setError(message)
+        setError(message)
+      }
     } finally {
       setBusy(false)
     }
@@ -114,6 +177,7 @@ export default function TaobaoImport() {
   const copyBookmarklet = async () => {
     if (!bookmarklet) return
     await navigator.clipboard.writeText(bookmarklet).catch(() => {})
+    setNotice(t('taobao.bookmarklet_copied'))
   }
 
   const downloadZip = async () => {
@@ -123,7 +187,7 @@ export default function TaobaoImport() {
       const href = URL.createObjectURL(blob)
       const anchor = document.createElement('a')
       anchor.href = href
-      anchor.download = `${draft?.sku || 'taobao-images'}.zip`
+      anchor.download = `${draft?.sku || `${sourceLabel.toLowerCase()}-images`}.zip`
       document.body.appendChild(anchor)
       anchor.click()
       anchor.remove()
@@ -171,8 +235,10 @@ export default function TaobaoImport() {
               <div className="card-title">{t('taobao.browser_title')}</div>
               <div className="card-sub">{t('taobao.browser_sub')}</div>
               {bookmarklet && <div className="mini-note"><span className="msym">drag_click</span>{t('taobao.bookmarklet_hint')}</div>}
+              {blockedUrl && <div className="mini-note warn"><span className="msym">lock</span>{t('taobao.browser_blocked_hint')}</div>}
             </div>
             <div className="browser-actions">
+              {blockedUrl && <a className="btn btn-ghost" href={blockedUrl} target="_blank" rel="noreferrer"><span className="msym">open_in_new</span>{t('taobao.open_taobao_product')}</a>}
               {!bookmarklet && (
                 <button className="btn btn-ghost" onClick={createBookmarklet} disabled={browserKeyBusy}>
                   <span className={`msym ${browserKeyBusy ? 'spin' : ''}`}>{browserKeyBusy ? 'progress_activity' : 'bookmark_add'}</span>
@@ -181,7 +247,7 @@ export default function TaobaoImport() {
               )}
               {bookmarklet && (
                 <>
-                  <a ref={bookmarkletLinkRef} className="btn btn-primary" href="#taobao-bookmarklet" onClick={(event) => event.preventDefault()} draggable="true">
+                  <a ref={bookmarkletLinkRef} className="btn btn-primary" href="#taobao-bookmarklet" onClick={(event) => { event.preventDefault(); copyBookmarklet() }} draggable="true" title={t('taobao.drag_bookmarklet')}>
                     <span className="msym">shopping_bag</span>{t('taobao.bookmarklet_name')}
                   </a>
                   <button className="icon-btn" onClick={copyBookmarklet} title={t('taobao.copy_bookmarklet')}><span className="msym">content_copy</span></button>
@@ -201,7 +267,7 @@ export default function TaobaoImport() {
             <div className="sh-logo"><span className="msym">shopping_bag</span></div>
             <div className="taobao-product-title">
               <div className="xh-badges">
-                <span className="pill brand">Taobao</span>
+                <span className="pill brand">{sourceLabel}</span>
                 <span className="pill pos">{t('taobao.translated')}</span>
                 <span className="pill warn"><span className="msym">event_repeat</span>{t('taobao.preorder_badge')}</span>
               </div>
@@ -251,7 +317,7 @@ export default function TaobaoImport() {
             <button className="btn btn-ghost btn-sm" onClick={downloadZip} disabled={!images.length}><span className="msym">folder_zip</span>{t('taobao.download_zip')}</button>
           )}>
             <div className="taobao-images">
-              {images.map((src, index) => <div className="taobao-img" key={src}><img src={src} alt={`Taobao ${index + 1}`} /></div>)}
+              {images.map((src, index) => <div className="taobao-img" key={src}><img src={src} alt={`${sourceLabel} ${index + 1}`} /></div>)}
             </div>
           </Card>
         </>

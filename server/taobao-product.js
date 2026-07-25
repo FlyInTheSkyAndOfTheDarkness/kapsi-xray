@@ -1,8 +1,9 @@
 export const DEFAULT_PREORDER_DAYS = 14
+export const MAX_PREORDER_DAYS = 30
 
 export function normalizePreorderDays(value) {
   const days = Number(value)
-  return Number.isFinite(days) && days > 0 ? Math.round(days) : DEFAULT_PREORDER_DAYS
+  return Number.isFinite(days) && days > 0 ? Math.min(MAX_PREORDER_DAYS, Math.round(days)) : DEFAULT_PREORDER_DAYS
 }
 
 function attributeName(attribute = {}) {
@@ -26,7 +27,8 @@ export function isPlatformMetadata(code, value = '') {
 export function sanitizeProductTitle(value) {
   return String(value || '')
     .replace(/\s+(?:[-–—|]\s*)?(?:table-)?tmall\.com(?:\s+tmall)?\s*$/i, '')
-    .replace(/\s+[-–—|]\s*(?:taobao|tmall)\s*$/i, '')
+    .replace(/\s+(?:[-–—|]\s*)?(?:detail\.)?1688\.com\s*$/i, '')
+    .replace(/\s+[-–—|]\s*(?:taobao|tmall|1688)\s*$/i, '')
     .replace(/\s+/g, ' ')
     .trim()
 }
@@ -34,7 +36,10 @@ export function sanitizeProductTitle(value) {
 export function canonicalTaobaoUrl(value) {
   try {
     const url = new URL(String(value || ''))
-    const id = url.searchParams.get('id') || url.searchParams.get('itemId')
+    const offerId = url.searchParams.get('offerId') || url.pathname.match(/\/offer\/(\d{6,})\.html/i)?.[1]
+    const id = url.searchParams.get('id') || url.searchParams.get('itemId') || offerId
+    const host = url.hostname.toLowerCase()
+    if (id && (host === '1688.com' || host.endsWith('.1688.com'))) return `https://detail.1688.com/offer/${encodeURIComponent(id)}.html`
     url.hash = ''
     url.search = ''
     if (id) url.searchParams.set('id', id)

@@ -10,15 +10,19 @@ import { estimateSales, analyzeOffers, buildSalesSeries, resolveMultiplierKey, D
 import { buildAnnualForecast } from '../lib/forecast.js'
 import { addSnapshot, getSnapshots, todayKey } from '../lib/store.js'
 import { exportCSV } from '../lib/csv.js'
-import { tenge, tengeShort, num, pct } from '../lib/format.js'
+import { tenge, tengeShort, num, pct, pctSigned } from '../lib/format.js'
 
 const EXAMPLES = ['iPhone 17 Pro', 'робот-пылесос', 'наушники', 'кофеварка']
+
+function kaspiDate(date) {
+  return `${String(date.getDate()).padStart(2, '0')}.${String(date.getMonth() + 1).padStart(2, '0')}.${date.getFullYear()}`
+}
 
 /* deterministic demo fallback if Kaspi is unreachable (prod without proxy / anti-bot) */
 function demoAnalytics(prod) {
   let h = 0
   for (const ch of String(prod.id || prod.title || 'x')) h = (h * 31 + ch.charCodeAt(0)) >>> 0
-  const r = (n) => ((h = (h * 1103515245 + 12345) >>> 0) % 1000) / 1000 - 0 + n * 0
+  const r = (n = 0) => ((h = (h * 1103515245 + 12345) >>> 0) % 1000) / 1000 + n * 0
   const price = prod.price || 20000 + Math.round(r() * 180000)
   const total = 40 + Math.round(r() * 3000)
   const rpm = 4 + r() * 60
@@ -32,7 +36,18 @@ function demoAnalytics(prod) {
     deliveryDuration: r() > 0.5 ? 'TODAY' : null,
   })).sort((a, b) => a.price - b.price)
   const byStar = { 5: Math.round(total * 0.78), 4: Math.round(total * 0.12), 3: Math.round(total * 0.05), 2: Math.round(total * 0.03), 1: Math.round(total * 0.02) }
-  const est = estimateSales({ price, ratingsTotal: total, reviews: [], createdTime: null, multiplier: REVIEW_TO_ORDER })
+  const now = new Date()
+  const reviews = []
+  for (let monthAgo = 0; monthAgo < 13; monthAgo += 1) {
+    const month = new Date(now.getFullYear(), now.getMonth() - monthAgo, 1)
+    const seasonal = 0.72 + ((month.getMonth() % 6) * 0.08) + r() * 0.35
+    const count = Math.max(0, Math.round(rpm * seasonal))
+    for (let i = 0; i < Math.min(count, 28); i += 1) {
+      const day = 1 + Math.floor(r() * 27)
+      reviews.push({ date: kaspiDate(new Date(month.getFullYear(), month.getMonth(), day)) })
+    }
+  }
+  const est = estimateSales({ price, ratingsTotal: total, reviews, createdTime: null, multiplier: REVIEW_TO_ORDER })
   // force a velocity-like estimate for demo
   est.available = true
   est.monthlySales = Math.round(rpm * REVIEW_TO_ORDER)
@@ -46,7 +61,7 @@ function demoAnalytics(prod) {
     offers,
     comp: analyzeOffers(offers),
     est,
-    rating: { global: 4.7, ratingsTotal: total, commentsTotal: Math.round(total * 0.8), byStar },
+    rating: { global: 4.7, ratingsTotal: total, commentsTotal: Math.round(total * 0.8), byStar, reviews },
     source: 'demo',
     catKey: 'default',
   }
@@ -267,7 +282,7 @@ function Detail({ t, lang, navigate, err, product, offers, comp, est, rating, so
     )
 
   const [sp] = useSearchParams()
-  const [period, setPeriod] = useState(sp.get('period') || 'd30')
+  const [period, setPeriod] = useState(sp.get('period') || 'd365')
   const [metric, setMetric] = useState(sp.get('metric') === 'revenue' ? 'revenue' : 'units')
   const [forecastMetric, setForecastMetric] = useState(sp.get('forecastMetric') === 'revenue' ? 'revenue' : 'units')
   const [cumulative, setCumulative] = useState(sp.get('cum') === '1')
@@ -276,7 +291,7 @@ function Detail({ t, lang, navigate, err, product, offers, comp, est, rating, so
     [period, rating, est.multiplier, lang, product.price]
   )
   const annual = useMemo(
-    () => buildAnnualForecast(rating.reviews, { multiplier: est.multiplier || REVIEW_TO_ORDER, lang, price: product.price || 0, monthsBack: 12, monthsAhead: 6 }),
+    () => buildAnnualForecast(rating.reviews, { multiplier: est.multiplier || REVIEW_TO_ORDER, lang, price: product.price || 0, daysBack: 365, monthsAhead: 6 }),
     [rating.reviews, est.multiplier, lang, product.price]
   )
   const periodOpts = [
@@ -284,6 +299,7 @@ function Detail({ t, lang, navigate, err, product, offers, comp, est, rating, so
     { value: 'd14', label: t('xray.p14') },
     { value: 'd30', label: t('xray.p30') },
     { value: 'd90', label: t('xray.p90') },
+    { value: 'd365', label: t('xray.p365') },
     { value: 'month', label: t('xray.by_month') },
   ]
   const dynSub =
@@ -420,8 +436,10 @@ function Detail({ t, lang, navigate, err, product, offers, comp, est, rating, so
         <div className="annual-kpis">
           <div className="metric"><div className="m-lbl">{t('xray.annual_sales')}</div><div className="m-val">{num(annual.annualSales)} {t('xray.per_unit_short')}</div></div>
           <div className="metric"><div className="m-lbl">{t('xray.annual_revenue')}</div><div className="m-val">{tengeShort(annual.annualRevenue, lang)}</div></div>
+          <div className="metric"><div className="m-lbl">{t('xray.avg_month')}</div><div className="m-val">{num(annual.avgMonthlySales)} {t('xray.per_unit_short')}</div></div>
           <div className="metric"><div className="m-lbl">{t('xray.forecast_6m')}</div><div className="m-val">{forecastMetric === 'revenue' ? tengeShort(annual.forecastRevenue, lang) : `${num(annual.forecastSales)} ${t('xray.per_unit_short')}`}</div></div>
           <div className="metric"><div className="m-lbl">{t('xray.next_month')}</div><div className="m-val">{forecastMetric === 'revenue' ? tengeShort(annual.nextMonthRevenue, lang) : `${num(annual.nextMonthSales)} ${t('xray.per_unit_short')}`}</div></div>
+          <div className="metric"><div className="m-lbl">{t('xray.trend')}</div><div className={`m-val ${annual.trendPct < 0 ? 'num-neg' : annual.trendPct > 0 ? 'num-pos' : ''}`}>{pctSigned(annual.trendPct * 100, 1)}</div></div>
         </div>
         <ForecastBars
           model={annual}
@@ -435,6 +453,7 @@ function Detail({ t, lang, navigate, err, product, offers, comp, est, rating, so
             empty: t('xray.no_reviews'),
           }}
         />
+        <AnnualMonthTable t={t} lang={lang} model={annual} />
         <div className="mini-note" style={{ marginTop: 8, alignItems: 'flex-start' }}>
           <span className="msym">auto_graph</span>
           {t('xray.forecast_note', { m: annual.nonZeroMonths })}
@@ -537,6 +556,78 @@ function Detail({ t, lang, navigate, err, product, offers, comp, est, rating, so
 
       {/* observation history (accumulated snapshots) */}
       <SnapshotHistory t={t} lang={lang} snaps={snaps} />
+    </div>
+  )
+}
+
+function AnnualMonthTable({ t, lang, model }) {
+  const rows = model?.rows || []
+  if (!rows.length) return null
+  const exportRows = rows.map((row) => ({
+    ...row,
+    type: row.forecast ? t('xray.forecast') : t('xray.fact'),
+    avgDaily: Math.round((row.avgDailySales || 0) * 10) / 10,
+    mom: row.momPct == null ? '' : Math.round(row.momPct * 10) / 10,
+  }))
+  return (
+    <div className="annual-monthly">
+      <div className="annual-monthly-head">
+        <div>
+          <b>{t('xray.monthly_breakdown')}</b>
+          <span>{t('xray.monthly_breakdown_sub')}</span>
+        </div>
+        <button
+          className="btn btn-ghost btn-sm"
+          onClick={() =>
+            exportCSV(
+              'kaspi-xray-365d-monthly.csv',
+              [
+                { key: 'label', label: t('xray.month') },
+                { key: 'type', label: t('xray.type') },
+                { key: 'ratings', label: t('xray.ratings') },
+                { key: 'sales', label: t('xray.est_sales') },
+                { key: 'revenue', label: t('xray.est_revenue') },
+                { key: 'avgDaily', label: t('xray.avg_day') },
+                { key: 'mom', label: t('xray.mom_change') },
+              ],
+              exportRows
+            )
+          }
+        >
+          <span className="msym">download</span> CSV
+        </button>
+      </div>
+      <div className="tbl-wrap">
+        <table className="tbl annual-monthly-table">
+          <thead>
+            <tr>
+              <th className="no-sort">{t('xray.month')}</th>
+              <th className="no-sort">{t('xray.type')}</th>
+              <th className="no-sort t-right">{t('xray.ratings')}</th>
+              <th className="no-sort t-right">{t('xray.est_sales')}</th>
+              <th className="no-sort t-right">{t('xray.est_revenue')}</th>
+              <th className="no-sort t-right">{t('xray.avg_day')}</th>
+              <th className="no-sort t-right">{t('xray.mom_change')}</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((row) => (
+              <tr key={`${row.key}-${row.forecast ? 'forecast' : 'actual'}`}>
+                <td className="mono">
+                  {row.label}
+                  {row.partial && !row.forecast && <span className="tiny-muted annual-partial">{t('xray.partial_month')}</span>}
+                </td>
+                <td><span className={`pill ${row.forecast ? 'pos' : 'brand'}`}>{row.forecast ? t('xray.forecast') : t('xray.fact')}</span></td>
+                <td className="t-right mono">{row.ratings == null ? '—' : num(row.ratings)}</td>
+                <td className="t-right mono">{num(row.sales)} {t('xray.per_unit_short')}</td>
+                <td className="t-right mono">{tengeShort(row.revenue, lang)}</td>
+                <td className="t-right mono">{Math.round((row.avgDailySales || 0) * 10) / 10} {t('xray.per_unit_short')}</td>
+                <td className={`t-right mono ${row.momPct < 0 ? 'num-neg' : row.momPct > 0 ? 'num-pos' : ''}`}>{row.momPct == null ? '—' : pctSigned(row.momPct, 1)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     </div>
   )
 }
