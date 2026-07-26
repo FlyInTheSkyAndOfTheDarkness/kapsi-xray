@@ -253,6 +253,15 @@ function validationMessages(resultResponse) {
     .slice(0, 8)
 }
 
+function plural(count, one, few, many) {
+  const mod100 = count % 100
+  if (mod100 >= 11 && mod100 <= 14) return many
+  const mod10 = count % 10
+  if (mod10 === 1) return one
+  if (mod10 >= 2 && mod10 <= 4) return few
+  return many
+}
+
 function attributeIssueAdvice(field, detail = '') {
   const text = String(detail || '').toLowerCase()
   if (field === 'code' && /regex|pattern|match/.test(text)) {
@@ -278,7 +287,74 @@ function fullAttributeIndex(productAttributes = [], target = {}, targetPosition 
   return matched
 }
 
-function attributeIssues(messages = [], product = {}, sentAttributes = null) {
+/* The other shape Kaspi answers in: prose, one sentence per field, run together
+   into a single line and ending in a roll-call of every code involved.
+
+     Fans*Power: Значение "да" поля "Fans*Power", имеет не правильный тип,
+     должен быть: Double Fans*Type: Поле должно содержать значение из
+     справочника, задано: да
+
+   Sentence boundaries are only findable because each one opens with an
+   attribute code — and we know exactly which codes we sent, so we look for
+   those rather than guessing at the pattern. */
+function prosaicAttributeIssues(text, sentAttrs = [], attrs = []) {
+  const codes = [...new Set(sentAttrs.map((attribute) => String(attribute?.code || '').trim()).filter(Boolean))]
+  const marks = []
+  codes.forEach((code) => {
+    for (let from = 0; ;) {
+      const at = text.indexOf(`${code}:`, from)
+      if (at < 0) break
+      marks.push({ at, end: at + code.length + 1, code })
+      from = at + code.length + 1
+    }
+  })
+  marks.sort((a, b) => a.at - b.at)
+
+  const issues = []
+  const seen = new Set()
+  marks.forEach((mark, index) => {
+    if (seen.has(mark.code)) return
+    const until = marks[index + 1] ? marks[index + 1].at : text.length
+    const detail = text.slice(mark.end, until).replace(/\s+/g, ' ').replace(/\bERRORS?\b\s*$/i, '').trim()
+    if (!detail) return
+    seen.add(mark.code)
+    issues.push({ ...describeKaspiAttributeProblem(mark.code, detail, attrs), detail: detail.slice(0, 360) })
+  })
+  return issues
+}
+
+function describeKaspiAttributeProblem(code, detail, attrs = []) {
+  const labelRu = attributeLabelRu(code)
+  const uiIndex = attrs.findIndex((attribute) => cleanKaspiAttributeCode(attribute?.code) === cleanKaspiAttributeCode(code))
+  const given = detail.match(/значени[ея]\s*«?"?([^"»]*)"?»?\s*пол[яе]/i)?.[1]
+    || detail.match(/задано:\s*([^.]+?)\s*$/i)?.[1]
+    || ''
+  const expected = detail.match(/должен быть:\s*([A-Za-zА-Яа-я]+)/i)?.[1] || ''
+  const quoted = given ? `отправлено «${given.trim()}»` : 'отправлено неподходящее значение'
+  const base = { code, labelRu, uiIndex, index: uiIndex, value: given.trim(), field: 'value', path: `attributes.${code}` }
+
+  if (/из справочника/i.test(detail)) {
+    return { ...base, kind: 'not_in_dictionary', action: 'choose', advice: `Kaspi принимает только значения из своего списка, ${quoted}. Откройте поле «${labelRu}» и выберите вариант из выпадающего списка.` }
+  }
+  if (/не\s*правильный тип|неверный тип/i.test(detail)) {
+    if (/^bool/i.test(expected)) {
+      return { ...base, kind: 'wrong_type', action: 'choose', advice: `Поле «${labelRu}» отвечает на «да / нет», ${quoted}. Выберите «Да» или «Нет» в списке — платформа сама отправит true или false.` }
+    }
+    if (/^(double|float|decimal|long|int)/i.test(expected)) {
+      return { ...base, kind: 'wrong_type', action: 'fill', advice: `Поле «${labelRu}» числовое, ${quoted}. Укажите только число, без слов и единиц измерения.` }
+    }
+    return { ...base, kind: 'wrong_type', action: 'fill', advice: `Поле «${labelRu}» ждёт значение типа ${expected || 'другого типа'}, ${quoted}.` }
+  }
+  if (/не существу|отсутству/i.test(detail)) {
+    return { ...base, kind: 'unknown_code', action: 'delete', advice: `Kaspi не знает характеристику «${labelRu}» в этой категории. Удалите строку или проверьте, та ли выбрана категория.` }
+  }
+  if (/обязательн/i.test(detail)) {
+    return { ...base, kind: 'missing_value', action: 'fill', advice: `Заполните обязательное поле «${labelRu}».` }
+  }
+  return { ...base, kind: 'invalid_value', action: 'fill', advice: `Проверьте поле «${labelRu}»: ${detail.slice(0, 200)}` }
+}
+
+export function attributeIssues(messages = [], product = {}, sentAttributes = null) {
   const text = messages.join('\n')
   const attrs = Array.isArray(product.attributes) ? product.attributes : []
   const sentAttrs = Array.isArray(sentAttributes) && sentAttributes.length
@@ -310,7 +386,9 @@ function attributeIssues(messages = [], product = {}, sentAttributes = null) {
       advice: attributeIssueAdvice(field, detail),
     })
   }
-  return issues.slice(0, 8)
+  // Kaspi picks one shape or the other; whichever answered, the seller gets a list.
+  if (!issues.length) issues.push(...prosaicAttributeIssues(text, sentAttrs, attrs))
+  return issues.slice(0, 12)
 }
 
 function normalizeSearchText(value = '') {
@@ -392,7 +470,7 @@ function importView(row) {
   const state = rejected ? 'rejected' : published ? 'published' : importFinished ? 'verifying' : 'processing'
   const reason = rejected
     ? (connectionReason || (attrIssues.length
-      ? `Исправьте характеристики товара: найдено ошибок ${attrIssues.length}. Откройте карточку — нужные поля будут подсвечены.`
+      ? `Kaspi не принял ${attrIssues.length} ${plural(attrIssues.length, 'характеристику', 'характеристики', 'характеристик')}: ${attrIssues.slice(0, 4).map((issue) => issue.labelRu || issue.code).join(', ')}${attrIssues.length > 4 ? ' и другие' : ''}.`
       : rawReason || 'Kaspi не принял товар. Детальная причина не была передана.'))
     : null
   return {

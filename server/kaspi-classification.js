@@ -55,6 +55,44 @@ const RU_WORDS = new Map(Object.entries({
   additional: 'дополнительная информация',
   product: 'товар',
   name: 'название',
+  mode: 'режим',
+  modes: 'режимы',
+  adjustment: 'регулировка',
+  speed: 'скорость',
+  speeds: 'скорости',
+  rotation: 'вращение',
+  rotate: 'вращение',
+  tilt: 'наклон',
+  heating: 'нагрев',
+  cooling: 'охлаждение',
+  control: 'управление',
+  timer: 'таймер',
+  noise: 'шум',
+  level: 'уровень',
+  battery: 'аккумулятор',
+  charging: 'зарядка',
+  blades: 'лопасти',
+  display: 'дисплей',
+  screen: 'экран',
+  warranty: 'гарантия',
+  set: 'комплект',
+  video: 'видео',
+  audio: 'звук',
+  connection: 'подключение',
+  interface: 'интерфейс',
+  lighting: 'подсветка',
+  backlight: 'подсветка',
+  filter: 'фильтр',
+  mount: 'крепление',
+  mounting: 'крепление',
+  resistance: 'устойчивость',
+  protection: 'защита',
+  consumption: 'потребление',
+  area: 'площадь',
+  temperature: 'температура',
+  pressure: 'давление',
+  frequency: 'частота',
+  current: 'ток',
 }))
 
 const RU_PHRASES = new Map(Object.entries({
@@ -72,6 +110,21 @@ const RU_PHRASES = new Map(Object.entries({
   washing: 'Возможность мытья',
   components: 'Комплектация',
   additional: 'Дополнительная информация',
+  'heating mode': 'Режим нагрева',
+  'height adjustment': 'Регулировка высоты',
+  'rotate function': 'Функция вращения',
+  'tilt function': 'Функция наклона',
+  'remote control': 'Пульт управления',
+  'power supply': 'Питание',
+  'noise level': 'Уровень шума',
+  'blade diameter': 'Диаметр лопастей',
+  'battery life': 'Время работы от аккумулятора',
+  'charging type': 'Тип зарядки',
+  'guarantee period': 'Гарантийный срок',
+  'warranty period': 'Гарантийный срок',
+  'number of speeds': 'Количество скоростей',
+  'number of modes': 'Количество режимов',
+  'number of blades': 'Количество лопастей',
 }))
 
 export function normalizeKaspiAttributeCode(value = '') {
@@ -103,6 +156,14 @@ function definitionKeys(definition = {}) {
   ].filter(Boolean))
 }
 
+/** Word-for-word fallback; English glue words are dropped rather than shown. */
+function translateWords(text = '') {
+  return text.split(' ')
+    .map((word) => RU_WORDS.get(word) || (/^(of|the|a|an|and|with|for)$/.test(word) ? '' : word))
+    .filter(Boolean)
+    .join(' ')
+}
+
 function humanizeEnglish(value = '') {
   const spaced = String(value || '')
     .replace(/([a-z])([A-Z])/g, '$1 $2')
@@ -113,12 +174,15 @@ function humanizeEnglish(value = '') {
   if (RU_PHRASES.has(lower)) return RU_PHRASES.get(lower)
   const phraseSuffix = [...RU_PHRASES.entries()].find(([phrase]) => lower.endsWith(` ${phrase}`))
   if (phraseSuffix) return phraseSuffix[1]
+  // "number of X" reads as a count of something, not as the something itself.
+  const counted = lower.match(/^(?:number|quantity|count|amount) of (.+)$/)
+  if (counted) return `Количество: ${translateWords(counted[1])}`
   const lastWord = lower.split(' ').at(-1)
   if (RU_WORDS.has(lastWord)) {
     const translated = RU_WORDS.get(lastWord)
     return translated.charAt(0).toUpperCase() + translated.slice(1)
   }
-  const translated = lower.split(' ').map((word) => RU_WORDS.get(word) || word).join(' ')
+  const translated = translateWords(lower)
   return translated ? translated.charAt(0).toUpperCase() + translated.slice(1) : 'Характеристика'
 }
 

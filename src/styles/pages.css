@@ -923,6 +923,34 @@
   white-space: normal;
   overflow-wrap: anywhere;
 }
+.preorder-issue-list {
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.preorder-issue-list li {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding-left: 9px;
+  border-left: 2px solid var(--danger);
+  font-size: 12px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+.preorder-issue-list li b {
+  color: var(--text);
+}
+.preorder-issue-list li span {
+  color: var(--text-muted);
+}
+.preorder-issue-more {
+  border-left-color: var(--border) !important;
+  color: var(--text-muted);
+}
 .preorder-advice,
 .preorder-success,
 .preorder-wait,

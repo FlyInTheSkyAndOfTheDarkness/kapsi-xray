@@ -198,6 +198,20 @@ export default function TaobaoPreorders() {
                         {state === 'rejected' ? (
                           <>
                             <div className="preorder-reason">{row.import?.reason}</div>
+                            {/* Kaspi answers in one long run-on line; show it field by field instead. */}
+                            {!!row.import?.attributeIssues?.length && (
+                              <ul className="preorder-issue-list">
+                                {row.import.attributeIssues.slice(0, 4).map((issue) => (
+                                  <li key={`${issue.code}-${issue.kind}`}>
+                                    <b>{issue.labelRu || issue.code}</b>
+                                    <span>{issue.advice || issue.detail}</span>
+                                  </li>
+                                ))}
+                                {row.import.attributeIssues.length > 4 && (
+                                  <li className="preorder-issue-more">{t('preorders.issues_more', { count: row.import.attributeIssues.length - 4 })}</li>
+                                )}
+                              </ul>
+                            )}
                             <div className="preorder-advice"><span className="msym">lightbulb</span>{row.import?.recommendation}</div>
                           </>
                         ) : state === 'published' ? (
