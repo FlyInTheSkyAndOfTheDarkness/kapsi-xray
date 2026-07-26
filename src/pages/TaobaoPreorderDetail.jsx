@@ -14,6 +14,37 @@ const STATUS_META = {
   rejected: { icon: 'error', tone: 'neg' },
 }
 
+/* Once the card is with Kaspi the seller's next move is in the cabinet, filling
+   Kaspi's own form. These make this page the place they copy from. */
+function CopyButton({ value, title }) {
+  const [done, setDone] = useState(false)
+  const text = String(value ?? '').trim()
+  const copy = async () => {
+    if (!text) return
+    try {
+      await navigator.clipboard.writeText(text)
+      setDone(true)
+      window.setTimeout(() => setDone(false), 1500)
+    } catch {
+      /* clipboard refused — the field itself is still selectable */
+    }
+  }
+  return (
+    <button type="button" className={`copy-btn ${done ? 'done' : ''}`} onClick={copy} disabled={!text} title={title}>
+      <span className="msym">{done ? 'check' : 'content_copy'}</span>
+    </button>
+  )
+}
+
+function CopyLabel({ text, value, title }) {
+  return (
+    <span className="field-label with-copy">
+      {text}
+      <CopyButton value={value} title={title} />
+    </span>
+  )
+}
+
 function fileData(file) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader()
@@ -268,6 +299,7 @@ export default function TaobaoPreorderDetail() {
   const [uploading, setUploading] = useState(false)
   const [deleting, setDeleting] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState(false)
+  const [unlockedForEdit, setUnlockedForEdit] = useState(false)
   const [message, setMessage] = useState('')
   const [error, setError] = useState('')
   const [dirty, setDirty] = useState(false)
@@ -445,6 +477,10 @@ export default function TaobaoPreorderDetail() {
   const platformIsLocal = feed?.url ? feedIsLocal : localFeedUrl(window.location.origin)
   const selfHostedPhotos = useMemo(() => images.some((image) => image.url.startsWith('/uploads/')), [images])
   const localPhotos = selfHostedPhotos && platformIsLocal
+  /* The card is with Kaspi and the seller is now retyping it into the cabinet.
+     Freeze what Kaspi already holds so a stray keystroke cannot put the two out
+     of step; price, stock and lead time stay live — those travel by feed. */
+  const cardFrozen = !!data?.cardLocked && !unlockedForEdit
   const missingFields = useMemo(() => {
     const fields = ['sku', 'title', 'brand', 'category'].filter((field) => !String(draft?.[field] || '').trim())
     const warehouses = String(draft?.warehouses || '').split(/[\n,;]/).map((value) => value.trim()).filter(Boolean)
@@ -647,6 +683,36 @@ export default function TaobaoPreorderDetail() {
     setCategoryOpen(false)
     setCategoryResults([])
     setError('')
+  }
+  /* Kaspi's own form wants the photos as files, so hand over the whole set at
+     once. The server fetches them, which also covers any still on the source CDN. */
+  const downloadPhotos = async () => {
+    try {
+      const blob = await API.taobaoImagesZip(id)
+      const href = URL.createObjectURL(blob)
+      const anchor = document.createElement('a')
+      anchor.href = href
+      anchor.download = `${draft?.sku || 'kaspi'}-photos.zip`
+      document.body.appendChild(anchor)
+      anchor.click()
+      anchor.remove()
+      window.setTimeout(() => URL.revokeObjectURL(href), 1000)
+    } catch {
+      setError(t('preorder_detail.photos_zip_error'))
+    }
+  }
+  const copyAllAttributes = async () => {
+    const text = (draft?.attributes || [])
+      .filter((attribute) => attribute.code && String(attribute.value ?? '').trim())
+      .map((attribute) => `${attributeDefMap.get(attributeMatchKey(attribute.code))?.labelRu || attribute.code}\t${attribute.value}`)
+      .join('\n')
+    if (!text) return
+    try {
+      await navigator.clipboard.writeText(text)
+      setMessage(t('preorder_detail.attributes_copied'))
+    } catch {
+      setError(t('preorder_detail.copy_error'))
+    }
   }
   const copyFeedUrl = async () => {
     if (!feed?.url) return
@@ -1064,16 +1130,32 @@ export default function TaobaoPreorderDetail() {
 
       {(message || error) && <div className={error ? 'cf-err' : 'cf-ok'}><span className="msym">{error ? 'error' : 'check_circle'}</span>{error || message}</div>}
 
+      {cardFrozen && (
+        <div className="preorder-copy-bar">
+          <span className="msym">content_paste</span>
+          <div>
+            <b>{t('preorder_detail.copy_mode_title')}</b>
+            <span>{t('preorder_detail.copy_mode_sub')}</span>
+          </div>
+          <button className="btn btn-primary btn-sm" type="button" onClick={downloadPhotos} disabled={!images.length}>
+            <span className="msym">folder_zip</span>{t('preorder_detail.download_photos')}
+          </button>
+          <button className="btn btn-ghost btn-sm" type="button" onClick={() => setUnlockedForEdit(true)}>
+            <span className="msym">edit</span>{t('preorder_detail.edit_card')}
+          </button>
+        </div>
+      )}
+
       <div className="preorder-detail-grid">
         <Card title={t('preorder_detail.main_title')} sub={t('preorder_detail.main_sub')}>
-          <div className="preorder-form-grid">
-            <label><span className="field-label">{t('common.sku')}</span><input className="input mono" value={draft.sku || ''} onChange={(event) => setField('sku', event.target.value)} /></label>
-            <label><span className="field-label">{t('common.brand')}</span><input className="input" value={draft.brand || ''} onChange={(event) => setField('brand', event.target.value)} /></label>
-            <label className="span-2"><span className="field-label">{t('common.product')}</span><input className="input" value={draft.title || ''} onChange={(event) => setField('title', event.target.value)} /></label>
+          <div className={`preorder-form-grid ${cardFrozen ? 'frozen' : ''}`}>
+            <label><CopyLabel text={t('common.sku')} value={draft.sku} title={t('preorder_detail.copy')} /><input className="input mono" value={draft.sku || ''} readOnly={cardFrozen} onChange={(event) => setField('sku', event.target.value)} /></label>
+            <label><CopyLabel text={t('common.brand')} value={draft.brand} title={t('preorder_detail.copy')} /><input className="input" value={draft.brand || ''} readOnly={cardFrozen} onChange={(event) => setField('brand', event.target.value)} /></label>
+            <label className="span-2"><CopyLabel text={t('common.product')} value={draft.title} title={t('preorder_detail.copy')} /><input className="input" value={draft.title || ''} readOnly={cardFrozen} onChange={(event) => setField('title', event.target.value)} /></label>
             <div className="span-2">
-              <span className="field-label">{t('common.category')}</span>
+              <CopyLabel text={t('common.category')} value={draft.categoryTitle || draft.category} title={t('preorder_detail.copy')} />
               <div className="category-code-field">
-                <input className="input" value={categoryInputValue} onFocus={openCategoryPicker} onChange={(event) => handleCategoryInput(event.target.value)} placeholder={t('preorder_detail.category_code_ph')} />
+                <input className="input" value={categoryInputValue} readOnly={cardFrozen} onFocus={cardFrozen ? undefined : openCategoryPicker} onChange={(event) => handleCategoryInput(event.target.value)} placeholder={t('preorder_detail.category_code_ph')} />
                 <button className="btn btn-ghost btn-sm" type="button" onClick={() => searchCategories(draft.categoryTitle || draft.title || categoryQuery)} disabled={categoryLoading}>
                   <span className={`msym ${categoryLoading ? 'spin' : ''}`}>{categoryLoading ? 'progress_activity' : 'manage_search'}</span>{t('preorder_detail.category_lookup')}
                 </button>
@@ -1117,7 +1199,7 @@ export default function TaobaoPreorderDetail() {
                 </div>
               )}
             </div>
-            <label className="span-2"><span className="field-label">{t('taobao.description')}</span><textarea className="input preorder-description" value={draft.description || ''} onChange={(event) => setField('description', event.target.value)} /></label>
+            <label className="span-2"><CopyLabel text={t('taobao.description')} value={draft.description} title={t('preorder_detail.copy')} /><textarea className="input preorder-description" value={draft.description || ''} readOnly={cardFrozen} onChange={(event) => setField('description', event.target.value)} /></label>
           </div>
         </Card>
 
@@ -1213,9 +1295,10 @@ export default function TaobaoPreorderDetail() {
       <div id="preorder-attributes">
         <Card title={t('preorder_detail.attributes_title')} sub={t('preorder_detail.attributes_sub')} aside={(
           <>
-            {!!attributeAiTargets.length && <button className="btn btn-primary btn-sm" onClick={fillRequiredAttributesWithAi} disabled={attributeAiBusy || !attributeAiConfigured}><span className={`msym ${attributeAiBusy ? 'spin' : ''}`}>{attributeAiBusy ? 'progress_activity' : 'auto_awesome'}</span>{attributeAiBusy ? t('preorder_detail.ai_attributes_progress') : t('preorder_detail.ai_attributes_run')}</button>}
-            {!!mandatoryAttributeDefs.length && <button className="btn btn-ghost btn-sm" onClick={addRequiredAttributes}><span className="msym">rule</span>{t('preorder_detail.add_required_attributes')}</button>}
-            <button className="btn btn-ghost btn-sm" onClick={addAttribute}><span className="msym">add</span>{t('preorder_detail.add_attribute')}</button>
+            <button className="btn btn-ghost btn-sm" type="button" onClick={copyAllAttributes} disabled={!draft.attributes?.length}><span className="msym">content_copy</span>{t('preorder_detail.copy_all_attributes')}</button>
+            {!cardFrozen && !!attributeAiTargets.length && <button className="btn btn-primary btn-sm" onClick={fillRequiredAttributesWithAi} disabled={attributeAiBusy || !attributeAiConfigured}><span className={`msym ${attributeAiBusy ? 'spin' : ''}`}>{attributeAiBusy ? 'progress_activity' : 'auto_awesome'}</span>{attributeAiBusy ? t('preorder_detail.ai_attributes_progress') : t('preorder_detail.ai_attributes_run')}</button>}
+            {!cardFrozen && !!mandatoryAttributeDefs.length && <button className="btn btn-ghost btn-sm" onClick={addRequiredAttributes}><span className="msym">rule</span>{t('preorder_detail.add_required_attributes')}</button>}
+            {!cardFrozen && <button className="btn btn-ghost btn-sm" onClick={addAttribute}><span className="msym">add</span>{t('preorder_detail.add_attribute')}</button>}
           </>
         )}>
         <div className="preorder-attributes">
@@ -1249,13 +1332,13 @@ export default function TaobaoPreorderDetail() {
               <div className={`preorder-attribute-row ${isMissing ? 'missing' : ''} ${kaspiIssue ? 'kaspi-error' : ''}`} key={`${index}-${attribute.code}`}>
                 <div className="preorder-attribute-name">
                   {attributeDefs.length ? (
-                    <select className="select" value={definition?.code || attribute.code} onChange={(event) => setAttribute(index, 'code', event.target.value)}>
+                    <select className="select" value={definition?.code || attribute.code} disabled={cardFrozen} onChange={(event) => setAttribute(index, 'code', event.target.value)}>
                       {!attribute.code && <option value="">{t('preorder_detail.attribute_code')}</option>}
                       {attribute.code && !definition && <option value={attribute.code}>{t('preorder_detail.attribute_unknown')}</option>}
                       {attributeDefs.map((item) => <option key={item.code} value={item.code}>{item.labelRu || item.code}{item.mandatory ? ' *' : ''}</option>)}
                     </select>
                   ) : (
-                    <input className="input" value={attribute.code} onChange={(event) => setAttribute(index, 'code', event.target.value)} placeholder={t('preorder_detail.attribute_code')} />
+                    <input className="input" value={attribute.code} readOnly={cardFrozen} onChange={(event) => setAttribute(index, 'code', event.target.value)} placeholder={t('preorder_detail.attribute_code')} />
                   )}
                   {definition && <span>{t('preorder_detail.attribute_technical_code')}: <code>{definition.code}</code></span>}
                 </div>
@@ -1266,6 +1349,7 @@ export default function TaobaoPreorderDetail() {
                       multiple={definition.multiValued}
                       size={definition.multiValued ? Math.min(5, Math.max(3, enumValues.length)) : undefined}
                       value={definition.multiValued ? selectedEnumValues : (selectedEnumValues[0] || '')}
+                      disabled={cardFrozen}
                       onChange={(event) => setEnumAttribute(index, definition.multiValued, event)}
                     >
                       {!definition.multiValued && <option value="">{t('preorder_detail.attribute_choose_value')}</option>}
@@ -1273,13 +1357,13 @@ export default function TaobaoPreorderDetail() {
                       {enumValues.map((item) => <option key={item.code} value={item.code}>{item.name}</option>)}
                     </select>
                   ) : definition?.type === 'boolean' ? (
-                    <select className="select" value={booleanValue} onChange={(event) => setAttribute(index, 'value', event.target.value)}>
+                    <select className="select" value={booleanValue} disabled={cardFrozen} onChange={(event) => setAttribute(index, 'value', event.target.value)}>
                       <option value="">{t('preorder_detail.attribute_choose_value')}</option>
                       <option value="true">{t('preorder_detail.attribute_yes')}</option>
                       <option value="false">{t('preorder_detail.attribute_no')}</option>
                     </select>
                   ) : (
-                    <input className="input" type={definition?.type === 'number' ? 'number' : 'text'} value={attribute.value} onChange={(event) => setAttribute(index, 'value', event.target.value)} placeholder={definition ? t('preorder_detail.attribute_value_typed', { type: definition.type }) : t('preorder_detail.attribute_value')} />
+                    <input className="input" type={definition?.type === 'number' ? 'number' : 'text'} value={attribute.value} readOnly={cardFrozen} onChange={(event) => setAttribute(index, 'value', event.target.value)} placeholder={definition ? t('preorder_detail.attribute_value_typed', { type: definition.type }) : t('preorder_detail.attribute_value')} />
                   )}
                   {definition && <span>{t(`preorder_detail.attribute_type_${definition.type}`)}{definition.multiValued ? ` · ${t('preorder_detail.attribute_multi')}` : ''}{isRequired ? ` · ${t('preorder_detail.attribute_required')}` : ''}</span>}
                   {definition?.type === 'enum' && !!enumValues.length && (
@@ -1294,7 +1378,8 @@ export default function TaobaoPreorderDetail() {
                   {definition?.type === 'string' && <span className="preorder-attribute-hint"><span className="msym">text_fields</span>{t('preorder_detail.attribute_hint_string')}</span>}
                   {kaspiIssue && <span className="preorder-attribute-problem">{kaspiIssue.advice || kaspiIssue.detail}</span>}
                 </div>
-                <button className="icon-btn" title={t('preorder_detail.remove')} onClick={() => removeAttribute(index)}><span className="msym">delete</span></button>
+                <CopyButton value={attribute.value} title={t('preorder_detail.copy')} />
+                {!cardFrozen && <button className="icon-btn" title={t('preorder_detail.remove')} onClick={() => removeAttribute(index)}><span className="msym">delete</span></button>}
               </div>
             )
           })}
@@ -1305,7 +1390,10 @@ export default function TaobaoPreorderDetail() {
 
       <div id="preorder-photos">
         <Card title={t('preorder_detail.photos_title')} sub={t('preorder_detail.photos_sub')} aside={(
-          <label className={`btn btn-primary btn-sm ${uploading ? 'disabled' : ''}`}><span className={`msym ${uploading ? 'spin' : ''}`}>{uploading ? 'progress_activity' : 'upload'}</span>{t('preorder_detail.upload_photos')}<input className="visually-hidden" type="file" accept="image/jpeg,image/png,image/webp" multiple disabled={uploading} onChange={uploadPhotos} /></label>
+          <>
+            <button className="btn btn-ghost btn-sm" type="button" onClick={downloadPhotos} disabled={!images.length}><span className="msym">folder_zip</span>{t('preorder_detail.download_photos')}</button>
+            <label className={`btn btn-primary btn-sm ${uploading ? 'disabled' : ''}`}><span className={`msym ${uploading ? 'spin' : ''}`}>{uploading ? 'progress_activity' : 'upload'}</span>{t('preorder_detail.upload_photos')}<input className="visually-hidden" type="file" accept="image/jpeg,image/png,image/webp" multiple disabled={uploading} onChange={uploadPhotos} /></label>
+          </>
         )}>
           <div className="preorder-photo-add"><input className="input" value={photoUrl} onChange={(event) => setPhotoUrl(event.target.value)} placeholder="https://..." /><button className="btn btn-ghost" onClick={addPhotoUrl} disabled={!photoUrl.trim()}><span className="msym">add_link</span>{t('preorder_detail.add_url')}</button></div>
         {!!images.length && (

@@ -923,6 +923,71 @@
   white-space: normal;
   overflow-wrap: anywhere;
 }
+/* Copy-from-here mode: the card is with Kaspi and the seller is retyping it. */
+.field-label.with-copy {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.copy-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text-muted);
+  cursor: pointer;
+  flex: 0 0 auto;
+}
+.copy-btn:hover:not(:disabled) {
+  color: var(--primary);
+  border-color: var(--primary);
+}
+.copy-btn:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+.copy-btn.done {
+  color: var(--success);
+  border-color: var(--success);
+}
+.copy-btn .msym {
+  font-size: 15px;
+}
+.preorder-copy-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 14px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--primary);
+  border-radius: 10px;
+  background: var(--surface);
+}
+.preorder-copy-bar > div {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1 1 260px;
+  min-width: 0;
+}
+.preorder-copy-bar span:not(.msym) {
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
+.preorder-form-grid.frozen .input,
+.preorder-form-grid.frozen textarea {
+  background: var(--surface-2);
+  cursor: text;
+}
 .preorder-issue-list {
   margin: 8px 0 0;
   padding: 0;
