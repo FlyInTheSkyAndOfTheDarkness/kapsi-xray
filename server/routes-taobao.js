@@ -1138,6 +1138,32 @@ taobaoRouter.get('/:id/images.zip', async (req, res) => {
   res.send(zip)
 })
 
+/**
+ * GET /api/taobao/:id/photo/:index — one photo of the card as it stands now,
+ * as a file. Goes through the server so a photo still hosted on the source CDN
+ * downloads just like a mirrored one.
+ */
+taobaoRouter.get('/:id/photo/:index', async (req, res) => {
+  const row = find('taobaoProducts', (x) => x.id === req.params.id && x.userId === req.user.id)
+  if (!row) return res.status(404).json({ error: 'not_found' })
+  const images = normalizeImages(row.product?.draft?.images || [])
+  const index = Number(req.params.index)
+  const target = Number.isInteger(index) && index >= 0 ? images[index]?.url : null
+  if (!target) return res.status(404).json({ error: 'not_found' })
+  let image = null
+  try {
+    image = readUploadedImage(target) || await taobao.fetchImage(target)
+  } catch {
+    image = null
+  }
+  if (!image?.data?.length) return res.status(502).json({ error: 'image_unavailable' })
+  const prefix = String(row.product?.source || '').startsWith('1688') ? '1688' : 'taobao'
+  const base = String(row.product?.draft?.sku || prefix).replace(/[^A-Za-z0-9_-]/g, '') || prefix
+  res.setHeader('content-type', image.contentType)
+  res.setHeader('content-disposition', `attachment; filename="${base}-${String(index + 1).padStart(2, '0')}.${extFromContentType(image.contentType)}"`)
+  res.send(image.data)
+})
+
 /** POST /api/taobao/:id/import { storeId, product } */
 taobaoRouter.post('/:id/import', async (req, res) => {
   const row = find('taobaoProducts', (x) => x.id === req.params.id && x.userId === req.user.id)

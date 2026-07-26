@@ -300,6 +300,7 @@ export default function TaobaoPreorderDetail() {
   const [deleting, setDeleting] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [unlockedForEdit, setUnlockedForEdit] = useState(false)
+  const [downloadingPhotos, setDownloadingPhotos] = useState(false)
   const [message, setMessage] = useState('')
   const [error, setError] = useState('')
   const [dirty, setDirty] = useState(false)
@@ -684,22 +685,36 @@ export default function TaobaoPreorderDetail() {
     setCategoryResults([])
     setError('')
   }
-  /* Kaspi's own form wants the photos as files, so hand over the whole set at
-     once. The server fetches them, which also covers any still on the source CDN. */
+  /* Kaspi's form takes photos one file at a time, so hand them over that way —
+     only the ones still on the card, in the order they are shown. */
+  const downloadPhoto = async (index) => {
+    const blob = await API.taobaoPhoto(id, index)
+    const ext = /png/.test(blob.type) ? 'png' : /webp/.test(blob.type) ? 'webp' : 'jpg'
+    const href = URL.createObjectURL(blob)
+    const anchor = document.createElement('a')
+    anchor.href = href
+    anchor.download = `${draft?.sku || 'kaspi'}-${String(index + 1).padStart(2, '0')}.${ext}`
+    document.body.appendChild(anchor)
+    anchor.click()
+    anchor.remove()
+    window.setTimeout(() => URL.revokeObjectURL(href), 1000)
+  }
   const downloadPhotos = async () => {
-    try {
-      const blob = await API.taobaoImagesZip(id)
-      const href = URL.createObjectURL(blob)
-      const anchor = document.createElement('a')
-      anchor.href = href
-      anchor.download = `${draft?.sku || 'kaspi'}-photos.zip`
-      document.body.appendChild(anchor)
-      anchor.click()
-      anchor.remove()
-      window.setTimeout(() => URL.revokeObjectURL(href), 1000)
-    } catch {
-      setError(t('preorder_detail.photos_zip_error'))
+    setDownloadingPhotos(true)
+    setError('')
+    let failed = 0
+    for (let index = 0; index < images.length; index += 1) {
+      try {
+        await downloadPhoto(index)
+      } catch {
+        failed += 1
+      }
+      // Browsers throttle a burst of downloads; a short gap keeps them all.
+      await new Promise((resolve) => { window.setTimeout(resolve, 400) })
     }
+    setDownloadingPhotos(false)
+    if (failed) setError(t('preorder_detail.photos_download_error', { count: failed }))
+    else setMessage(t('preorder_detail.photos_downloaded', { count: images.length }))
   }
   const copyAllAttributes = async () => {
     const text = (draft?.attributes || [])
@@ -1137,8 +1152,9 @@ export default function TaobaoPreorderDetail() {
             <b>{t('preorder_detail.copy_mode_title')}</b>
             <span>{t('preorder_detail.copy_mode_sub')}</span>
           </div>
-          <button className="btn btn-primary btn-sm" type="button" onClick={downloadPhotos} disabled={!images.length}>
-            <span className="msym">folder_zip</span>{t('preorder_detail.download_photos')}
+          <button className="btn btn-primary btn-sm" type="button" onClick={downloadPhotos} disabled={!images.length || downloadingPhotos}>
+            <span className={`msym ${downloadingPhotos ? 'spin' : ''}`}>{downloadingPhotos ? 'progress_activity' : 'download'}</span>
+            {t('preorder_detail.download_photos', { count: images.length })}
           </button>
           <button className="btn btn-ghost btn-sm" type="button" onClick={() => setUnlockedForEdit(true)}>
             <span className="msym">edit</span>{t('preorder_detail.edit_card')}
@@ -1391,7 +1407,7 @@ export default function TaobaoPreorderDetail() {
       <div id="preorder-photos">
         <Card title={t('preorder_detail.photos_title')} sub={t('preorder_detail.photos_sub')} aside={(
           <>
-            <button className="btn btn-ghost btn-sm" type="button" onClick={downloadPhotos} disabled={!images.length}><span className="msym">folder_zip</span>{t('preorder_detail.download_photos')}</button>
+            <button className="btn btn-ghost btn-sm" type="button" onClick={downloadPhotos} disabled={!images.length || downloadingPhotos}><span className={`msym ${downloadingPhotos ? 'spin' : ''}`}>{downloadingPhotos ? 'progress_activity' : 'download'}</span>{t('preorder_detail.download_photos', { count: images.length })}</button>
             <label className={`btn btn-primary btn-sm ${uploading ? 'disabled' : ''}`}><span className={`msym ${uploading ? 'spin' : ''}`}>{uploading ? 'progress_activity' : 'upload'}</span>{t('preorder_detail.upload_photos')}<input className="visually-hidden" type="file" accept="image/jpeg,image/png,image/webp" multiple disabled={uploading} onChange={uploadPhotos} /></label>
           </>
         )}>
@@ -1423,6 +1439,7 @@ export default function TaobaoPreorderDetail() {
               <div className="preorder-photo-actions">
                 <button className="icon-btn" title={t('preorder_detail.move_left')} disabled={index === 0} onClick={() => moveImage(index, -1)}><span className="msym">arrow_back</span></button>
                 <button className="icon-btn" title={t('preorder_detail.move_right')} disabled={index === images.length - 1} onClick={() => moveImage(index, 1)}><span className="msym">arrow_forward</span></button>
+                <button className="icon-btn" title={t('preorder_detail.download_photo')} onClick={() => downloadPhoto(index).catch(() => setError(t('preorder_detail.photos_download_error', { count: 1 })))}><span className="msym">download</span></button>
                 <button className="icon-btn danger" title={t('preorder_detail.remove')} onClick={() => removeImage(index)}><span className="msym">delete</span></button>
               </div>
             </div>

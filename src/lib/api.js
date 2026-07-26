@@ -105,6 +105,7 @@ export const API = {
   taobaoProduct: (id) => api(`/taobao/${encodeURIComponent(id)}`),
   importTaobao: (id, body = {}) => api(`/taobao/${id}/import`, { method: 'POST', body }),
   taobaoImagesZip: (id) => apiBlob(`/taobao/${id}/images.zip`),
+  taobaoPhoto: (id, index) => apiBlob(`/taobao/${id}/photo/${index}`),
 }
 
 function query(params) {

@@ -9,7 +9,7 @@
 
 import { after, before, describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -272,5 +272,33 @@ describe('pipeline stage', () => {
     const { preorders } = await (await api('/api/taobao/preorders')).json()
     assert.ok(preorders.every((row) => typeof row.stage === 'string'))
     assert.ok(preorders.some((row) => row.id === withdrawn.id))
+  })
+})
+
+describe('photos for the Kaspi cabinet', () => {
+  let photoRow
+
+  before(() => {
+    // Kaspi's own form takes one file at a time, so each photo has to come
+    // down individually — and by way of the server, since some still live on
+    // the marketplace CDN.
+    writeFileSync(join(DATA_DIR, 'uploads', 'mirror-testphoto.jpg'), Buffer.from([0xff, 0xd8, 0xff, 0xdb, 0, 1, 2, 3]))
+    photoRow = seedProduct({
+      sku: 'TB700100', title: 'С фото', brand: NO_BRAND, salePrice: 700, stock: 2,
+      category: 'Master - Cases', images: [{ url: '/uploads/mirror-testphoto.jpg' }],
+      warehouses: ['PP2'], deliveryDays: 12,
+    })
+  })
+
+  it('serves a photo of the card as a named file', async () => {
+    const res = await api(`/api/taobao/${photoRow.id}/photo/0`)
+    assert.equal(res.status, 200)
+    assert.match(res.headers.get('content-disposition'), /attachment; filename="TB700100-01\.jpg"/)
+    assert.equal((await res.arrayBuffer()).byteLength, 8)
+  })
+
+  it('has nothing to offer beyond the photos on the card', async () => {
+    assert.equal((await api(`/api/taobao/${photoRow.id}/photo/5`)).status, 404)
+    assert.equal((await api(`/api/taobao/${photoRow.id}/photo/-1`)).status, 404)
   })
 })
