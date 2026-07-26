@@ -1128,7 +1128,7 @@ export default function TaobaoPreorderDetail() {
             </div>
             <div className={`preorder-publish-photos ${images.length ? '' : 'empty'}`}>
               <div className="preorder-publish-photo-preview">
-                {images[0]?.url ? <img src={images[0].url} alt={t('preorder_detail.publish_photos_title')} /> : <span className="msym">add_photo_alternate</span>}
+                {images[0]?.url ? <img src={images[0].url} alt={t('preorder_detail.publish_photos_title')} referrerPolicy="no-referrer" /> : <span className="msym">add_photo_alternate</span>}
               </div>
               <div className="preorder-publish-photo-body">
                 <div className="preorder-publish-photo-head">
@@ -1322,7 +1322,7 @@ export default function TaobaoPreorderDetail() {
         <div className="preorder-photo-grid">
           {images.map((image, index) => (
             <div className={`preorder-photo ${selectedImages.has(image.url) ? 'selected' : ''}`} key={`${image.url}-${index}`}>
-              <img src={image.url} alt={`${draft.title} ${index + 1}`} />
+              <img src={image.url} alt={`${draft.title} ${index + 1}`} referrerPolicy="no-referrer" />
               {index === 0 && <span className="pill brand">{t('preorder_detail.cover')}</span>}
               <button className="preorder-photo-select" title={selectedImages.has(image.url) ? t('preorder_detail.ai_unselect_photo') : t('preorder_detail.ai_select_photo')} onClick={() => toggleImageSelection(image.url)}><span className="msym">{selectedImages.has(image.url) ? 'check_box' : 'check_box_outline_blank'}</span></button>
               {aiResults[image.url] && <span className="preorder-photo-ai-ready"><span className="msym">check</span>{t('preorder_detail.ai_ready_badge')}</span>}
@@ -1347,7 +1347,7 @@ export default function TaobaoPreorderDetail() {
                 <article className="preorder-ai-compare" key={sourceUrl}>
                   <figure>
                     <button className="preorder-ai-image-open" type="button" title={t('preorder_detail.ai_open_large')} onClick={() => setImageViewer({ url: sourceUrl, title: `${t('preorder_detail.ai_original')} #${index + 1}` })}>
-                      <img src={sourceUrl} alt={t('preorder_detail.ai_original')} />
+                      <img src={sourceUrl} alt={t('preorder_detail.ai_original')} referrerPolicy="no-referrer" />
                       <span className="msym">zoom_in</span>
                     </button>
                     <figcaption>{t('preorder_detail.ai_original')} #{index + 1}</figcaption>
@@ -1384,7 +1384,7 @@ export default function TaobaoPreorderDetail() {
               <b>{imageViewer.title}</b>
               <button className="icon-btn" title={t('common.close')} onClick={() => setImageViewer(null)}><span className="msym">close</span></button>
             </div>
-            <img src={imageViewer.url} alt={imageViewer.title} />
+            <img src={imageViewer.url} alt={imageViewer.title} referrerPolicy="no-referrer" />
           </div>
         </div>
       )}

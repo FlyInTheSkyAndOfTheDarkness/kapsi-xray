@@ -317,7 +317,8 @@ export default function TaobaoImport() {
             <button className="btn btn-ghost btn-sm" onClick={downloadZip} disabled={!images.length}><span className="msym">folder_zip</span>{t('taobao.download_zip')}</button>
           )}>
             <div className="taobao-images">
-              {images.map((src, index) => <div className="taobao-img" key={src}><img src={src} alt={`${sourceLabel} ${index + 1}`} /></div>)}
+              {/* Alibaba's CDN answers 403 to a foreign Referer; a blank one is served normally. */}
+              {images.map((src, index) => <div className="taobao-img" key={src}><img src={src} alt={`${sourceLabel} ${index + 1}`} referrerPolicy="no-referrer" /></div>)}
             </div>
           </Card>
         </>

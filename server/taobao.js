@@ -251,15 +251,27 @@ function normalizeImageUrl(raw) {
   }
 }
 
+/* Offer pages are as much interface as merchandise: shop banners, trust
+   badges, delivery icons. Product photography sits under /img/ibank/ and
+   /imgextra/; the interface art gives itself away by carrying its own pixel
+   size in the file name, or by living in the CMS and sprite directories. */
+function isProductImage(url) {
+  if (/\/cms\/upload\//i.test(url)) return false
+  if (/\/tfs\//i.test(url)) return false
+  const size = url.match(/-tps-(\d+)-(\d+)/i)
+  if (size && Math.min(Number(size[1]), Number(size[2])) < 250) return false
+  return true
+}
+
 function extractImages(html) {
   const out = new Set()
   const og = html.match(/<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']+)/i)?.[1]
   const ogUrl = normalizeImageUrl(og)
-  if (ogUrl) out.add(ogUrl)
+  if (ogUrl && isProductImage(ogUrl)) out.add(ogUrl)
   const re = /(?:https?:)?\/\/(?:[^"'\\<>\s/]+\.)?(?:alicdn|taobao|tmall|tbcdn|1688)\.[^"'\\<>\s]+?\.(?:jpg|jpeg|png|webp)/ig
   for (const m of html.matchAll(re)) {
     const u = normalizeImageUrl(m[0])
-    if (u) out.add(u)
+    if (u && isProductImage(u)) out.add(u)
     if (out.size >= 24) break
   }
   return [...out]
@@ -429,7 +441,7 @@ export async function productFromBrowserPayload(payload = {}, { shippingCny = 0,
   const specsRaw = Array.isArray(payload.specs)
     ? payload.specs.map((s) => ({ key: cleanText(s.key), value: cleanText(s.value) })).filter((s) => s.key && s.value && !isPlatformMetadata(s.key, s.value))
     : []
-  const images = [...new Set((payload.images || []).map(allowedImageUrl).filter(Boolean))].slice(0, 30)
+  const images = [...new Set((payload.images || []).map(productImageUrl).filter(Boolean))].slice(0, 30)
   const priceCny = Math.max(0, Number(payload.priceCny || payload.price || 0) || 0)
   if (!title && !priceCny && !images.length && !specsRaw.length) {
     const e = new Error('TAOBAO_PARSE_FAILED')
@@ -482,6 +494,7 @@ export async function productFromBrowserPayload(payload = {}, { shippingCny = 0,
   }
 }
 
+/** Safe to fetch: a marketplace host we recognise. */
 export function allowedImageUrl(raw) {
   const u = normalizeImageUrl(raw)
   if (!u) return null
@@ -491,6 +504,12 @@ export function allowedImageUrl(raw) {
   } catch {
     return null
   }
+}
+
+/** Worth importing: safe to fetch, and a photo of the goods rather than of the site. */
+export function productImageUrl(raw) {
+  const u = allowedImageUrl(raw)
+  return u && isProductImage(u) ? u : null
 }
 
 export async function fetchImage(url) {

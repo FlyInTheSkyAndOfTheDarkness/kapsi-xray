@@ -5,7 +5,8 @@ import { filter, find, insert, remove, update, uid } from './db.js'
 import * as taobao from './taobao.js'
 import * as kaspi from './kaspi.js'
 import { makeZip } from './zip.js'
-import { removeUploadedImages, saveUploadedImage } from './uploads.js'
+import { readUploadedImage, removeUploadedImages, saveUploadedImage } from './uploads.js'
+import { mirrorProductImages } from './image-mirror.js'
 import { applyPreorder, canonicalTaobaoUrl, isPlatformMetadata, kaspiSku, MAX_PREORDER_DAYS, NO_BRAND, normalizeImages, normalizePreorderDays, sanitizeDescription, sanitizeProductTitle } from './taobao-product.js'
 import { ensurePriceListFeedKey, preorderPriceListSummary } from './kaspi-price-list.js'
 import { suggestKaspiAttributes } from './ai-attributes.js'
@@ -176,7 +177,10 @@ function importsForProduct(userId, productId) {
   return filter('imports', (row) => row.userId === userId && row.taobaoProductId === productId)
 }
 
-function saveAnalyzedProduct(userId, product) {
+async function saveAnalyzedProduct(userId, sourceProduct) {
+  // The source CDN will not serve a photo to a browser on our domain, so the
+  // copies have to exist before anything tries to display or publish them.
+  const product = await mirrorProductImages(sourceProduct)
   const identity = taobaoIdentity(product)
   const candidates = filter('taobaoProducts', (row) => row.userId === userId && identity && taobaoIdentity(row.product) === identity)
   const existing = candidates.sort((a, b) => {
@@ -830,7 +834,7 @@ taobaoRouter.post('/browser-import', async (req, res) => {
   if (!keyRow) return res.status(401).json({ error: 'invalid_browser_key' })
   try {
     const product = await taobao.productFromBrowserPayload(req.body?.payload || {})
-    const row = saveAnalyzedProduct(keyRow.userId, product)
+    const row = await saveAnalyzedProduct(keyRow.userId, product)
     res.json({ product: publicProduct(row) })
   } catch (e) {
     const code = e.code || 'taobao_failed'
@@ -855,7 +859,7 @@ taobaoRouter.post('/browser-key', (req, res) => {
 taobaoRouter.post('/browser-payload', async (req, res) => {
   try {
     const product = await taobao.productFromBrowserPayload(req.body?.payload || {})
-    const row = saveAnalyzedProduct(req.user.id, product)
+    const row = await saveAnalyzedProduct(req.user.id, product)
     res.json({ product: publicProduct(row) })
   } catch (e) {
     const code = e.code || 'taobao_failed'
@@ -1023,7 +1027,7 @@ taobaoRouter.post('/analyze', async (req, res) => {
       markupPct: req.body?.markupPct,
       rate: req.body?.rate,
     })
-    const row = saveAnalyzedProduct(req.user.id, product)
+    const row = await saveAnalyzedProduct(req.user.id, product)
     res.json({ product: publicProduct(row) })
   } catch (e) {
     const code = e.code || 'taobao_failed'
@@ -1041,7 +1045,7 @@ taobaoRouter.get('/:id/images.zip', async (req, res) => {
   const files = []
   for (let i = 0; i < Math.min(urls.length, 20); i++) {
     try {
-      const img = await taobao.fetchImage(urls[i])
+      const img = readUploadedImage(urls[i]) || await taobao.fetchImage(urls[i])
       if (!img?.data?.length) continue
       files.push({ name: `${prefix}-${String(i + 1).padStart(2, '0')}.${extFromContentType(img.contentType)}`, data: img.data })
     } catch {

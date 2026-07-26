@@ -173,7 +173,7 @@ export default function TaobaoPreorders() {
                       <td>
                         <div className="preorder-product">
                           <div className="preorder-thumb">
-                            {row.image ? <img src={row.image} alt="" /> : <span className="msym">image_not_supported</span>}
+                            {row.image ? <img src={row.image} alt="" referrerPolicy="no-referrer" /> : <span className="msym">image_not_supported</span>}
                           </div>
                           <div>
                           <button className="preorder-title" onClick={() => navigate(`/taobao/preorders/${row.id}`)}>{row.title}</button>

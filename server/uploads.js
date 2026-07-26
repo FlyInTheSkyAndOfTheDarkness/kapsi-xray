@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, unlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs'
 import { basename, join } from 'node:path'
 import { randomBytes } from 'node:crypto'
 import { DATA_DIR } from './db.js'
@@ -37,6 +37,21 @@ export function saveUploadedImage({ data, type } = {}, userId = 'user') {
   const filename = `${owner}-${Date.now()}-${randomBytes(6).toString('hex')}.${ext}`
   writeFileSync(join(UPLOAD_DIR, filename), buffer)
   return `/uploads/${filename}`
+}
+
+/** Reads back an image we already hold, so mirrored photos need no second download. */
+export function readUploadedImage(url) {
+  if (!/^\/uploads\/[a-zA-Z0-9._-]+$/.test(String(url || ''))) return null
+  const name = basename(String(url))
+  const path = join(UPLOAD_DIR, name)
+  if (!existsSync(path)) return null
+  const ext = name.split('.').pop().toLowerCase()
+  const contentType = ext === 'png' ? 'image/png' : ext === 'webp' ? 'image/webp' : 'image/jpeg'
+  try {
+    return { contentType, data: readFileSync(path) }
+  } catch {
+    return null
+  }
 }
 
 export function removeUploadedImages(images = []) {
