@@ -239,16 +239,33 @@ describe('card lock', () => {
 })
 
 describe('pipeline stage', () => {
-  it('reports a product whose card went out as being in the feed', async () => {
+  it('waits before claiming a product needs linking, then says so', async () => {
     // Seeded fresh: opening a card triggers a Kaspi status sync, which cannot
     // succeed against a fake token and would colour the stage.
     const fresh = seedProduct({
       sku: 'TB555000111', title: 'Свежий', brand: NO_BRAND, salePrice: 4200, stock: 3,
       category: 'Master - Cases', images: [{ url: 'https://example.kz/b.jpg' }], warehouses: ['PP2'], deliveryDays: 10,
     })
+    const stageOf = async () => {
+      const { preorders } = await (await api('/api/taobao/preorders')).json()
+      return preorders.find((row) => row.id === fresh.id)?.stage
+    }
+    // Kaspi last read the file before this offer existed — nothing to report yet.
+    assert.equal(await stageOf(), 'in_feed')
+
+    const url = (await (await api(`/api/stores/${store.id}/preorder-feed`)).json()).feed.url
+    await fetch(url)
+    // Now Kaspi has seen the offer and the product is still not on sale.
+    assert.equal(await stageOf(), 'awaiting_link')
+  })
+
+  it('does not claim linking is needed for an article the feed never carried', async () => {
+    const orphan = seedProduct({
+      sku: 'TB999NOFEED', title: 'Без склада', brand: NO_BRAND, salePrice: 100, stock: 5,
+      category: 'Master - Cases', images: [], warehouses: ['PP2'], deliveryDays: 10,
+    })
     const { preorders } = await (await api('/api/taobao/preorders')).json()
-    const stage = preorders.find((row) => row.id === fresh.id)?.stage
-    assert.ok(['in_feed', 'awaiting_link'].includes(stage), `stage=${stage}`)
+    assert.equal(preorders.find((row) => row.id === orphan.id)?.stage, 'card_sent')
   })
 
   it('marks a draft that Kaspi never accepted as blocked', async () => {

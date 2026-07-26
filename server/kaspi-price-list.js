@@ -124,6 +124,9 @@ export function preorderPriceListSummary(req, store) {
     status: offers.length ? 'ready' : 'empty',
     url: preorderFeedUrl(req, store),
     items: offers.length,
+    // Which articles actually made it in — a product's own stage depends on this,
+    // not on whether the file has any offers at all.
+    skus: offers.map((offer) => offer.sku),
     selling: offers.filter((offer) => !offer.withdrawn).length,
     withdrawn: offers.filter((offer) => offer.withdrawn).length,
     skipped: skipped.length,

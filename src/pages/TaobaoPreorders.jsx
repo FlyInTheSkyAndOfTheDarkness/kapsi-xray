@@ -19,7 +19,16 @@ function dateTime(value) {
   return new Intl.DateTimeFormat('ru-RU', { dateStyle: 'short', timeStyle: 'short' }).format(new Date(value))
 }
 
-function StatusPill({ state, t }) {
+function StatusPill({ state, stage, t }) {
+  // Waiting to be linked is the seller's move, so it outranks the import state.
+  if (stage === 'awaiting_link') {
+    return (
+      <span className="pill warn">
+        <span className="msym">link_off</span>
+        {t('preorders.stage_awaiting_link')}
+      </span>
+    )
+  }
   const meta = STATUS_META[state] || STATUS_META.processing
   return (
     <span className={`pill ${meta.tone}`}>
@@ -127,7 +136,7 @@ export default function TaobaoPreorders() {
             <b>{t('preorders.awaiting_link_title', { count: awaitingLink })}</b>
             <span>{t('preorders.awaiting_link_how')}</span>
           </div>
-          <a className="btn btn-primary btn-sm" href="https://kaspi.kz/mc/#/unrecognized" target="_blank" rel="noreferrer">
+          <a className="btn btn-primary btn-sm" href="https://kaspi.kz/mc/#/products/pending/CHECK/1" target="_blank" rel="noreferrer">
             <span className="msym">open_in_new</span>{t('preorders.open_cabinet')}
           </a>
         </div>
@@ -191,7 +200,7 @@ export default function TaobaoPreorders() {
                         <div className="preorder-meta">{t('products.sale_price')}: {row.price ? tenge(row.price) : '—'}</div>
                       </td>
                       <td data-label={t('preorders.status')}>
-                        <StatusPill state={state} t={t} />
+                        <StatusPill state={state} stage={row.stage} t={t} />
                         {state !== 'draft' && <div className="preorder-meta mono">{row.import?.technicalStatus || 'UPLOADED'}</div>}
                       </td>
                       <td className="preorder-result" data-label={t('preorders.result')}>
@@ -221,6 +230,13 @@ export default function TaobaoPreorders() {
                           </>
                         ) : state === 'draft' ? (
                           <div className="preorder-draft"><span className="msym">edit_note</span>{t('preorders.draft_note')}</div>
+                        ) : row.stage === 'awaiting_link' ? (
+                          <>
+                            <div className="preorder-reason">{t('preorders.stage_awaiting_link_note')}</div>
+                            <a className="preorder-link" href="https://kaspi.kz/mc/#/products/pending/CHECK/1" target="_blank" rel="noreferrer">
+                              <span className="msym">open_in_new</span>{t('preorders.open_unlinked')}
+                            </a>
+                          </>
                         ) : state === 'verifying' ? (
                           <div className="preorder-wait"><span className="msym">manage_search</span>{t('preorders.verifying_note')}</div>
                         ) : (

@@ -491,24 +491,21 @@ function importView(row) {
   }
 }
 
-/* Kaspi needs an hour to pull the feed and then drops unknown SKUs into
-   «Нераспознанные товары → Без привязки». Only after that silence is it fair to
-   tell the seller the product is waiting to be linked by hand. */
-const AWAITING_LINK_GRACE_MS = 2 * 60 * 60 * 1000
-
 /**
  * Where the product actually is on the way to the shelf. The import state alone
  * describes the card only; the price list and the manual linking step are what
  * decide whether a buyer can order it.
  */
-function preorderStage(productRow, importState, priceList, store) {
+function preorderStage(productRow, importState, priceList, store, sku, offerSince) {
   if (importState === 'published') return 'on_sale'
   if (importState === 'rejected') return 'blocked'
-  const inFeed = priceList?.status === 'ready'
+  const inFeed = !!sku && (priceList?.skus || []).includes(sku)
   if (!inFeed) return importState === 'draft' ? 'draft' : 'card_sent'
-  const pulledAfterCreate = store?.priceListFetchedAt
-    && store.priceListFetchedAt - (productRow.createdAt || 0) > AWAITING_LINK_GRACE_MS
-  return pulledAfterCreate ? 'awaiting_link' : 'in_feed'
+  /* Kaspi has read the file since this offer appeared in it and the product is
+     still not on the shelf — so it is sitting in «Нераспознанные → Без привязки»,
+     waiting for the one step of this pipeline no API can do for the seller. */
+  const readSinceOffer = (store?.priceListFetchedAt || 0) > (offerSince || productRow.createdAt || 0)
+  return readSinceOffer ? 'awaiting_link' : 'in_feed'
 }
 
 function preorderView(productRow, importRow, attempts, userId, req = null) {
@@ -520,7 +517,7 @@ function preorderView(productRow, importRow, attempts, userId, req = null) {
   const view = importView(importRow)
   const priceList = store ? preorderPriceListSummary(req, store) : importRow?.priceList || null
   return {
-    stage: preorderStage(productRow, view?.state || 'draft', priceList, store),
+    stage: preorderStage(productRow, view?.state || 'draft', priceList, store, String(importedProduct.sku || '').trim(), importRow?.createdAt),
     cardLocked: cardLocked(userId, productRow),
     feedEnabled: importedProduct.feedEnabled !== false,
     id: productRow.id,
