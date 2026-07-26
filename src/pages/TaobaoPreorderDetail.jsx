@@ -439,7 +439,12 @@ export default function TaobaoPreorderDetail() {
   const attributeDefMap = useMemo(() => definitionsByAlias(attributeDefs), [attributeDefs])
   const feed = data?.priceList || data?.import?.priceList || feedInfo || null
   const feedIsLocal = feed?.url && localFeedUrl(feed.url)
-  const localPhotos = useMemo(() => images.some((image) => image.url.startsWith('/uploads/')), [images])
+  /* Photos we host ourselves — uploaded by hand, or mirrored off the marketplace
+     CDN — are only a problem when Kaspi cannot reach this platform at all. The
+     feed URL is built from PUBLIC_BASE_URL, so it answers exactly that. */
+  const platformIsLocal = feed?.url ? feedIsLocal : localFeedUrl(window.location.origin)
+  const selfHostedPhotos = useMemo(() => images.some((image) => image.url.startsWith('/uploads/')), [images])
+  const localPhotos = selfHostedPhotos && platformIsLocal
   const missingFields = useMemo(() => {
     const fields = ['sku', 'title', 'brand', 'category'].filter((field) => !String(draft?.[field] || '').trim())
     const warehouses = String(draft?.warehouses || '').split(/[\n,;]/).map((value) => value.trim()).filter(Boolean)

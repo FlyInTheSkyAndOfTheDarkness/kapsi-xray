@@ -1530,13 +1530,17 @@
   line-height: 1.35;
 }
 .preorder-feed-url {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto auto;
+  display: flex;
+  flex-wrap: wrap;
   gap: 8px;
   align-items: center;
 }
+/* The address is long and the card is narrow: sharing a row with the buttons
+   left it clipped after four characters, reading as a plain "http" link. */
 .preorder-feed-url .input {
+  flex: 1 0 100%;
   min-width: 0;
+  font-size: 12px;
 }
 .mini-note.warn .msym {
   color: var(--warning);
@@ -2081,8 +2085,7 @@
   .category-code-field,
   .category-picker-token,
   .category-picker-search,
-  .preorder-publish-photos,
-  .preorder-feed-url {
+  .preorder-publish-photos {
     grid-template-columns: 1fr;
   }
   .preorder-publish-photo-preview {
