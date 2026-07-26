@@ -18,6 +18,7 @@ const DATA_DIR = mkdtempSync(join(tmpdir(), 'kx-images-test-'))
 process.env.KX_DATA_DIR = DATA_DIR
 
 const { productImageUrl, allowedImageUrl } = await import('../taobao.js')
+const { normalizeImages } = await import('../taobao-product.js')
 const { readUploadedImage, UPLOAD_DIR } = await import('../uploads.js')
 const { mirrorImageUrl, mirrorProductImages } = await import('../image-mirror.js')
 
@@ -38,9 +39,24 @@ describe('which images belong to the product', () => {
     assert.equal(productImageUrl('https://cbu01.alicdn.com/cms/upload/2015/460/315/2513064_1964054271.png'), null)
   })
 
+  it('drops vector art, which Kaspi reports back as having no data', () => {
+    assert.equal(productImageUrl('https://cbu01.alicdn.com/img/ibank/975055165021_9.svg'), null)
+    assert.equal(productImageUrl('https://gw.alicdn.com/imgextra/icon.svg?v=2'), null)
+  })
+
   it('still refuses hosts that are not a marketplace', () => {
     assert.equal(allowedImageUrl('https://evil.example.com/steal.jpg'), null)
     assert.equal(productImageUrl('https://evil.example.com/steal.jpg'), null)
+  })
+})
+
+describe('drafts saved before the checks existed', () => {
+  it('drops an SVG on the way out, without needing a re-import', () => {
+    // normalizeImages feeds both the Kaspi card and the price list.
+    assert.deepEqual(
+      normalizeImages([{ url: 'https://cbu01.alicdn.com/x/975055165021_9.svg' }, { url: IBANK }]),
+      [{ url: IBANK }],
+    )
   })
 })
 

@@ -101,8 +101,14 @@ export function normalizeAttributes(attributes = [], limit = 80) {
   }).slice(0, limit)
 }
 
+/* Kaspi wants photographs. An SVG swept off the offer page comes back from the
+   import API as «Image ... has no data», so it is dropped here rather than at
+   import — that way drafts saved before this check are cleaned up too. */
+const VECTOR_IMAGE_RE = /\.svgz?(?:$|[?#])/i
+
 function normalizedImageUrl(image) {
   const value = String(typeof image === 'string' ? image : image?.url || '').trim()
+  if (VECTOR_IMAGE_RE.test(value)) return null
   if (/^\/uploads\/[a-zA-Z0-9._-]+$/.test(value)) return value
   try {
     const url = new URL(value)

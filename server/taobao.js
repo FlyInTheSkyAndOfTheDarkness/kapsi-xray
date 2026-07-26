@@ -256,6 +256,8 @@ function normalizeImageUrl(raw) {
    /imgextra/; the interface art gives itself away by carrying its own pixel
    size in the file name, or by living in the CMS and sprite directories. */
 function isProductImage(url) {
+  // Vector art is never merchandise, and Kaspi rejects it: «Image ... has no data».
+  if (/\.svgz?(?:$|[?#])/i.test(url)) return false
   if (/\/cms\/upload\//i.test(url)) return false
   if (/\/tfs\//i.test(url)) return false
   const size = url.match(/-tps-(\d+)-(\d+)/i)
@@ -518,6 +520,7 @@ export async function fetchImage(url) {
   const res = await fetchWithTimeout(safe, { headers: { 'User-Agent': UA, Accept: 'image/avif,image/webp,image/*,*/*' } }, 15000)
   if (!res.ok) return null
   const ct = res.headers.get('content-type') || ''
-  if (!ct.startsWith('image/')) return null
+  // Raster only: an SVG saved under a .jpg name would reach Kaspi as a broken photo.
+  if (!/^image\/(jpeg|jpg|png|webp)\b/i.test(ct)) return null
   return { contentType: ct, data: Buffer.from(await res.arrayBuffer()) }
 }
