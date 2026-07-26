@@ -188,6 +188,21 @@ export async function loadClassificationAttributes(token, category) {
   })
 }
 
+/* The classifier names its types the way Java does — Boolean, Double, Long —
+   and the import API wants a JSON value of that type, not a string spelling of
+   it: true, not "true"; 50, not "50". Sending the string is rejected with
+   «имеет не правильный тип, должен быть: Boolean». */
+const BOOLEAN_TYPES = new Set(['bool', 'boolean'])
+const NUMERIC_TYPES = new Set(['number', 'numeric', 'double', 'float', 'decimal', 'int', 'integer', 'long', 'short'])
+
+function isBooleanType(type = '') {
+  return BOOLEAN_TYPES.has(String(type).trim().toLowerCase())
+}
+
+function isNumericType(type = '') {
+  return NUMERIC_TYPES.has(String(type).trim().toLowerCase())
+}
+
 function splitValues(value) {
   if (Array.isArray(value)) return value.map((item) => String(item || '').trim()).filter(Boolean)
   return String(value ?? '').split(/[,;\n]+/).map((item) => item.trim()).filter(Boolean)
@@ -295,9 +310,9 @@ export function validateClassificationAttributes(attributes = [], definitions = 
       return
     }
 
-    if (definition.type === 'boolean') {
-      const bool = /^(true|да|yes|1)$/i.test(text) ? 'true' : /^(false|нет|no|0)$/i.test(text) ? 'false' : null
-      if (bool == null) {
+    if (isBooleanType(definition.type)) {
+      const bool = /^(true|да|yes|1)$/i.test(text) ? true : /^(false|нет|no|0)$/i.test(text) ? false : null
+      if (bool === null) {
         issues.push(issue({
           kind: 'invalid_boolean',
           action: 'choose',
@@ -313,7 +328,7 @@ export function validateClassificationAttributes(attributes = [], definitions = 
       return
     }
 
-    if (definition.type === 'number') {
+    if (isNumericType(definition.type)) {
       const number = Number(text.replace(',', '.'))
       if (!Number.isFinite(number)) {
         issues.push(issue({
@@ -326,7 +341,7 @@ export function validateClassificationAttributes(attributes = [], definitions = 
         }))
         return
       }
-      valid.push({ code: definition.code, value: String(number) })
+      valid.push({ code: definition.code, value: number })
       return
     }
 
