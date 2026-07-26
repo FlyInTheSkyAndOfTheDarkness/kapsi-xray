@@ -568,9 +568,13 @@ function missingRequiredFields(product = {}) {
  * Re-sending needs an explicit unlock, and the lock re-engages right after.
  */
 export function cardLocked(userId, productRow) {
-  const published = importsForProduct(userId, productRow.id).filter((row) => row.code)
-  if (!published.length) return false
-  return (productRow.cardUnlockedAt || 0) <= Math.max(...published.map((row) => row.createdAt || 0))
+  // An import Kaspi rejected still carries an import code, but it created no
+  // card and no pre-order — there is nothing to protect, and the seller has to
+  // be able to fix the draft and send it again.
+  const live = importsForProduct(userId, productRow.id)
+    .filter((row) => row.code && importView(row)?.state !== 'rejected')
+  if (!live.length) return false
+  return (productRow.cardUnlockedAt || 0) <= Math.max(...live.map((row) => row.createdAt || 0))
 }
 
 async function publishTaobaoProduct(req, res, { productRow, storeId, sourceProduct }) {

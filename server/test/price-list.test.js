@@ -23,7 +23,7 @@ process.env.PORT = String(PORT)
 process.env.JWT_SECRET = 'price-list-test-secret'
 process.env.PUBLIC_BASE_URL = BASE
 
-const { insert, uid } = await import('../db.js')
+const { find, insert, uid, update } = await import('../db.js')
 const { kaspiSku, MAX_PREORDER_DAYS, NO_BRAND, normalizePreorderDays } = await import('../taobao-product.js')
 const { buildPreorderPriceListXml, ensurePriceListFeedKey, storeWarehouseMap } = await import('../kaspi-price-list.js')
 const { cardLocked } = await import('../routes-taobao.js')
@@ -201,6 +201,18 @@ describe('public endpoint', () => {
 describe('card lock', () => {
   it('locks a card that already went out to Kaspi', () => {
     assert.equal(cardLocked(userId, good), true)
+  })
+
+  it('does not lock a card Kaspi rejected — there is no pre-order to protect', () => {
+    // A rejected import still carries an import code; the seller must be able
+    // to fix the draft and send it again, or the product is stuck for good.
+    const row = seedProduct({
+      sku: 'TB404404', title: 'Отклонён', brand: NO_BRAND, salePrice: 990, stock: 1,
+      category: 'Master - Cases', images: [{ url: 'https://example.kz/c.jpg' }], warehouses: ['PP2'], deliveryDays: 5,
+    })
+    const attempt = find('imports', (item) => item.taobaoProductId === row.id)
+    update('imports', attempt.id, { localError: 'Kaspi отклонил характеристики товара.' })
+    assert.equal(cardLocked(userId, row), false)
   })
 
   it('refuses to re-publish it', async () => {
