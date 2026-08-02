@@ -4,6 +4,7 @@ import { useI18n, LANGS } from '../i18n/index.jsx'
 import { useAppState, CITIES } from '../state/AppState.jsx'
 import { useAuth } from '../state/Auth.jsx'
 import { useAlerts } from '../state/Alerts.jsx'
+import { useStore } from '../state/Store.jsx'
 import { tenge, pctSigned } from '../lib/format.js'
 
 function timeAgo(ts, t) {
@@ -205,6 +206,31 @@ function Sidebar({ open, onClose }) {
   )
 }
 
+/**
+ * Why the catalog is empty or old, on every page rather than only on Connect.
+ * A rate-limited server used to look identical to a store with no goods.
+ */
+function CatalogNotice() {
+  const { t, lang } = useI18n()
+  const { hasStore, warning, stale, fetchedAt, loading } = useStore()
+  if (!hasStore || loading || !warning) return null
+  const when = fetchedAt ? new Date(fetchedAt).toLocaleString(lang === 'en' ? 'en-GB' : 'ru-RU') : null
+  const blocked = warning === 'kaspi_rate_limited' || warning === 'kaspi_blocked'
+  const text = stale
+    ? t('catalog.stale', { when: when || '—' })
+    : blocked
+      ? t('catalog.rate_limited')
+      : t('catalog.unreachable')
+  return (
+    <div className="catalog-banner-wrap">
+      <div className={`catalog-banner ${stale ? 'warn' : 'bad'}`}>
+        <span className="msym">{stale ? 'history' : 'cloud_off'}</span>
+        <span>{text}</span>
+      </div>
+    </div>
+  )
+}
+
 export default function Shell({ children }) {
   const { t } = useI18n()
   const { store } = useAppState()
@@ -235,6 +261,7 @@ export default function Shell({ children }) {
             </div>
           </div>
         </header>
+        <CatalogNotice />
         <main className="content">{children}</main>
         <footer className="foot">
           <span>{t('footer.rights')}</span>

@@ -417,7 +417,10 @@ async function findPublishedProduct(store, product) {
   const sku = String(product?.sku || '').trim()
   const title = normalizeSearchText(product?.title)
   const titleHead = title.split(' ').slice(0, 8).join(' ')
-  const { products } = await kaspi.merchantProducts(store.merchantId, { maxPages: 10 })
+  // The whole catalog, not the first pages: a freshly published card is not
+  // necessarily near the front, and missing it leaves the product unlinked
+  // forever. The read is cached, so this is usually free.
+  const { products } = await kaspi.merchantProducts(store.merchantId)
   const found = products.find((item) => String(item.id) === sku)
     || products.find((item) => normalizeSearchText(item.title) === title)
     || products.find((item) => {

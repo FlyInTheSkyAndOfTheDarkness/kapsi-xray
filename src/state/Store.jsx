@@ -187,6 +187,11 @@ export function StoreDataProvider({ children }) {
         store: data?.store || null,
         products: data?.products || [],
         truncated: data?.truncated || false,
+        /* Why the catalog looks the way it does. Kaspi rate-limits by IP, so
+           "empty" and "from cache" are ordinary states the seller must see. */
+        stale: data?.stale || false,
+        fetchedAt: data?.fetchedAt || null,
+        warning: data?.warning || null,
         loading,
         sellerLoading,
         sellerSummary,

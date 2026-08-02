@@ -2,7 +2,13 @@
    Server-side Kaspi.kz client. The backend IS the proxy — it
    calls kaspi.kz directly with the headers Kaspi expects, so
    no CORS issues and tokens never touch the browser.
+
+   Egress, pacing and caching live in kaspi-net.js — Kaspi
+   rate-limits by IP hard enough that they cannot be an
+   afterthought at the call sites.
    ============================================================ */
+
+import { kaspiJSON, merchantFetch } from './kaspi-net.js'
 
 const BASE = 'https://kaspi.kz'
 const API_V2 = `${BASE}/shop/api/v2`
@@ -22,30 +28,10 @@ function headers(extra = {}, referer = `${BASE}/shop/`) {
   }
 }
 
+/** Public endpoint read; drops the cache metadata the callers below ignore. */
 async function getJSON(url, opts = {}) {
-  const res = await fetchWithTimeout(url, opts, opts.timeoutMs || 15000)
-  if (!res.ok) {
-    const e = new Error(`Kaspi ${res.status}`)
-    e.status = res.status
-    throw e
-  }
-  const ct = res.headers.get('content-type') || ''
-  if (!ct.includes('json')) {
-    const e = new Error('Kaspi returned non-JSON (blocked)')
-    e.code = 'NON_JSON'
-    throw e
-  }
-  return res.json()
-}
-
-async function fetchWithTimeout(url, opts = {}, timeoutMs = 15000) {
-  const ctrl = new AbortController()
-  const t = setTimeout(() => ctrl.abort(), timeoutMs)
-  try {
-    return await fetch(url, { ...opts, signal: ctrl.signal })
-  } finally {
-    clearTimeout(t)
-  }
+  const { data } = await kaspiJSON(url, opts)
+  return data
 }
 
 async function readJSON(res) {
@@ -130,18 +116,60 @@ export async function reviews(id, { limit = 1000 } = {}) {
   }
 }
 
-export async function merchantProducts(merchantId, { city = DEFAULT_CITY, maxPages = 8 } = {}) {
-  const out = []
+/* Kaspi serves this listing 12 items per page and ignores `limit`, so the walk
+   is driven by what comes back, not by the page size we asked for. A 382-item
+   store needs 33 pages; stopping early silently hid three quarters of it. */
+const PAGE_CAP = Number(process.env.KASPI_MAX_PAGES) || 60
+
+/**
+ * The merchant's catalog, read from Kaspi's public listing.
+ * Walks until the listing runs out. A page that fails ends the walk instead of
+ * discarding the pages already in hand — a partial catalog still beats none —
+ * and `stale` says at least one page came from cache because Kaspi refused.
+ */
+export async function merchantProducts(merchantId, { city = DEFAULT_CITY, maxPages = PAGE_CAP } = {}) {
+  const seen = new Set()
+  const products = []
+  let stale = false
+  let fetchedAt = Date.now()
+  let complete = false
+  let failure = null
+  let barrenPages = 0
   for (let page = 0; page < maxPages; page++) {
     const url = `${BASE}/yml/product-view/pl/results?text=&q=%3AallMerchants%3A${merchantId}&page=${page}&limit=24&ui=d&i=-1&c=${city}`
-    const json = await getJSON(url, { headers: headers() })
-    const data = json.data || []
-    out.push(...data.map(normCard))
-    if (data.length < 12) break
+    let answer
+    try {
+      answer = await kaspiJSON(url, { headers: headers() })
+    } catch (e) {
+      failure = e
+      break
+    }
+    if (answer.stale) {
+      stale = true
+      fetchedAt = Math.min(fetchedAt, answer.fetchedAt)
+    }
+    const rows = answer.data?.data || []
+    if (!rows.length) {
+      complete = true
+      break
+    }
+    const before = products.length
+    rows.map(normCard).forEach((p) => {
+      if (seen.has(p.id)) return
+      seen.add(p.id)
+      products.push(p)
+    })
+    // Pages overlap, but several in a row adding nothing means the listing is
+    // cycling rather than advancing — treat that as the end too.
+    barrenPages = products.length === before ? barrenPages + 1 : 0
+    if (barrenPages >= 2) {
+      complete = true
+      break
+    }
   }
-  const seen = new Set()
-  const products = out.filter((p) => (seen.has(p.id) ? false : (seen.add(p.id), true)))
-  return { products, truncated: out.length >= maxPages * 12 }
+  // Nothing to show at all: the caller needs the reason, not an empty catalog.
+  if (!products.length && failure) throw failure
+  return { products, truncated: !complete, stale, fetchedAt }
 }
 
 export async function merchantInfo(merchantId, firstProductId, { city = DEFAULT_CITY } = {}) {
@@ -165,7 +193,9 @@ export async function merchantApi(token, path, { method = 'GET', body, city = DE
     throw e
   }
   const url = path.startsWith('http') ? path : `${API_V2}${path.startsWith('/') ? path : `/${path}`}`
-  const res = await fetchWithTimeout(url, {
+  // Not paced or cached: these are authenticated, order-fetching runs into the
+  // hundreds of sequential calls, and Kaspi treats the token API separately.
+  const res = await merchantFetch(url, {
     method,
     headers: {
       'User-Agent': UA,
@@ -175,7 +205,7 @@ export async function merchantApi(token, path, { method = 'GET', body, city = DE
       'X-KS-City': city,
     },
     body: body ? JSON.stringify(body) : undefined,
-  }, 15000)
+  })
   const data = await readJSON(res)
   if (!res.ok) {
     const e = new Error(`Kaspi merchant API ${res.status}`)
@@ -194,7 +224,7 @@ export async function merchantProductApi(token, path, { method = 'GET', body } =
   }
   const url = path.startsWith('http') ? path : `${PRODUCTS_API}${path.startsWith('/') ? path : `/${path}`}`
   const hasBody = body !== undefined && body !== null
-  const res = await fetchWithTimeout(url, {
+  const res = await merchantFetch(url, {
     method,
     headers: {
       'User-Agent': UA,
@@ -203,7 +233,8 @@ export async function merchantProductApi(token, path, { method = 'GET', body } =
       'X-Auth-Token': token,
     },
     body: hasBody ? (typeof body === 'string' ? body : JSON.stringify(body)) : undefined,
-  }, 20000)
+    timeoutMs: 20_000,
+  })
   const data = await readJSON(res)
   if (!res.ok) {
     const e = new Error(`Kaspi products API ${res.status}`)
@@ -239,6 +270,30 @@ export async function merchantOrderEntries(token, orderId) {
 
 export async function merchantOrderEntryProduct(token, entryId) {
   return merchantApi(token, `/orderentries/${encodeURIComponent(entryId)}/product`)
+}
+
+/**
+ * Ask one cabinet path with the seller's token and report only how it answered.
+ * Bodies are truncated hard: this is for mapping the API, not for reading data,
+ * and the response goes to a browser.
+ */
+export async function merchantProbe(token, path) {
+  const res = await merchantFetch(`${BASE}${path}`, {
+    headers: {
+      'User-Agent': UA,
+      Accept: 'application/vnd.api+json',
+      'X-Auth-Token': token,
+      'X-KS-City': DEFAULT_CITY,
+    },
+    timeoutMs: 12_000,
+  })
+  const body = await res.text().catch(() => '')
+  return {
+    path,
+    status: res.status,
+    contentType: (res.headers.get('content-type') || '').split(';')[0],
+    sample: body.slice(0, 180).replace(/\s+/g, ' '),
+  }
 }
 
 export async function merchantImportSchema(token) {

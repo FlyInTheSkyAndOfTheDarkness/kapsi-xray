@@ -11,6 +11,7 @@ import { taobaoRouter } from './routes-taobao.js'
 import { aiRouter } from './routes-ai.js'
 import { adminRouter } from './routes-admin.js'
 import { startScheduler } from './scheduler.js'
+import { cooldownLeft, kaspiFetch, proxyStatus } from './kaspi-net.js'
 import { requireAuth } from './auth.js'
 import { find, update } from './db.js'
 import { UPLOAD_DIR } from './uploads.js'
@@ -25,7 +26,11 @@ app.use(cors())
 app.use(express.json({ limit: '12mb' }))
 app.use('/uploads', express.static(UPLOAD_DIR))
 
-app.get('/api/health', (req, res) => res.json({ ok: true, ts: Date.now() }))
+/* Egress state is on health on purpose: "no products anywhere" is almost always
+   Kaspi refusing this IP, and that should be one curl away. */
+app.get('/api/health', (req, res) =>
+  res.json({ ok: true, ts: Date.now(), kaspi: { proxy: proxyStatus(), cooldownMs: cooldownLeft() } })
+)
 app.use('/api/auth', authRouter)
 app.use('/api/stores', storesRouter)
 app.use('/api/competitors', competitorsRouter)
@@ -53,7 +58,7 @@ app.all('/kaspi/*', async (req, res) => {
   const path = req.originalUrl.replace(/^\/kaspi/, '')
   const m = path.match(/offers\/(\d+)/)
   try {
-    const upstream = await fetch('https://kaspi.kz' + path, {
+    const upstream = await kaspiFetch('https://kaspi.kz' + path, {
       method: req.method,
       headers: {
         'User-Agent': UA,

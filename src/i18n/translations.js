@@ -581,6 +581,11 @@ export const translations = {
       demo_note: 'Демо-данные',
       loading: 'Загрузка…',
     },
+    catalog: {
+      stale: 'Kaspi сейчас не отдаёт каталог — показаны сохранённые данные от {when}.',
+      rate_limited: 'Kaspi ограничил доступ с IP этого сервера (429). Каталог и аналитика недоступны, пока запросы не пойдут через казахстанский прокси.',
+      unreachable: 'Kaspi недоступен — каталог не загрузился. Данные появятся после восстановления связи.',
+    },
     topbar: {
       store: 'Мой магазин на Kaspi',
       demo: 'Демо-режим',
@@ -1057,6 +1062,11 @@ export const translations = {
       show_loss_only: 'Тек зиянды',
       demo_note: 'Демо-деректер',
     },
+    catalog: {
+      stale: 'Kaspi қазір каталогты бермей тұр — {when} сақталған деректер көрсетілген.',
+      rate_limited: 'Kaspi осы сервердің IP-мекенжайын шектеді (429). Сұраулар Қазақстан прокси арқылы жүрмейінше каталог пен аналитика қолжетімсіз.',
+      unreachable: 'Kaspi қолжетімсіз — каталог жүктелмеді. Байланыс қалпына келген соң деректер пайда болады.',
+    },
     topbar: {
       store: 'Kaspi-дегі дүкенім',
       demo: 'Демо-режим',
@@ -1483,6 +1493,11 @@ export const translations = {
       of_revenue: 'of revenue',
       show_loss_only: 'Loss-making only',
       demo_note: 'Demo data',
+    },
+    catalog: {
+      stale: 'Kaspi is not returning the catalog right now — showing saved data from {when}.',
+      rate_limited: 'Kaspi rate-limited this server IP (429). The catalog and analytics stay unavailable until requests go through a Kazakhstan proxy.',
+      unreachable: 'Kaspi is unreachable — the catalog did not load. Data returns once the connection recovers.',
     },
     topbar: {
       store: 'My Kaspi store',

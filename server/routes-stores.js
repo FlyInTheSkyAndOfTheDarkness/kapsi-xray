@@ -84,6 +84,36 @@ function markPublicCatalog(store, status, error = null, productCount = null) {
   return update('stores', store.id, patch) || store
 }
 
+/* Naming the refusal matters: a rate limit is fixed by routing egress through
+   Kazakhstan, an unreachable host by looking at the network. Both used to
+   arrive as the same empty catalog. */
+function catalogErrorCode(e) {
+  if (e?.status === 429 || e?.code === 'COOLDOWN' || e?.code === 'THROTTLED') return 'kaspi_rate_limited'
+  if (e?.code === 'NON_JSON') return 'kaspi_blocked'
+  return 'kaspi_unreachable'
+}
+
+/* kaspi-net's cache dies with the process. Keeping the last good catalog on the
+   store row means a restart in the middle of a block still has one to show. */
+const CATALOG_CACHE_LIMIT = 500
+
+function saveCatalogCache(store, products, truncated) {
+  const cached = Array.isArray(store.catalogProducts) ? store.catalogProducts : []
+  // A walk cut short by Kaspi must not replace a fuller catalog with its stub.
+  if (truncated && cached.length > products.length) return store
+  return update('stores', store.id, {
+    catalogProducts: products.slice(0, CATALOG_CACHE_LIMIT),
+    catalogTruncated: truncated,
+    catalogFetchedAt: Date.now(),
+  }) || store
+}
+
+function readCatalogCache(store) {
+  const products = Array.isArray(store.catalogProducts) ? store.catalogProducts : []
+  if (!products.length) return null
+  return { products, truncated: !!store.catalogTruncated, fetchedAt: store.catalogFetchedAt || null }
+}
+
 function publicStore(s) {
   return {
     id: s.id,
@@ -95,13 +125,14 @@ function publicStore(s) {
     publicStatus: s.publicStatus || 'ok',
     publicError: s.publicError || null,
     publicCheckedAt: s.publicCheckedAt || null,
+    catalogFetchedAt: s.catalogFetchedAt || null,
     hasToken: !!s.token,
     hasPreorderFeed: !!s.priceListFeedKey,
     createdAt: s.createdAt,
   }
 }
 
-function storeCatalogResponse(userId, store, products = [], truncated = false, warning = null) {
+function storeCatalogResponse(userId, store, products = [], truncated = false, warning = null, meta = {}) {
   const preorderEntries = preorderCatalogEntries(userId, store.id)
   const preorderById = new Map(preorderEntries.map((entry) => [entry.product.id, entry.product]))
   const mergedProducts = products.map((product) => {
@@ -122,7 +153,7 @@ function storeCatalogResponse(userId, store, products = [], truncated = false, w
     const profit = productProfit(product, product.cost, est)
     return { ...product, est, profit }
   })
-  return { store: publicStore(store), products: rows, truncated, warning }
+  return { store: publicStore(store), products: rows, truncated, warning, stale: false, fetchedAt: null, ...meta }
 }
 
 const listData = (json) => (Array.isArray(json?.data) ? json.data : json?.data ? [json.data] : [])
@@ -273,7 +304,7 @@ storesRouter.post('/connect', async (req, res) => {
   if (!mid) return res.status(400).json({ error: 'bad_ref' })
   let store = find('stores', (s) => s.userId === req.user.id && s.merchantId === mid)
   try {
-    const { products, truncated } = await kaspi.merchantProducts(mid, { city })
+    const { products, truncated, stale, fetchedAt } = await kaspi.merchantProducts(mid, { city })
     if (!products.length) {
       const patch = {
         name: store?.name || `Магазин #${mid}`,
@@ -290,26 +321,36 @@ storesRouter.post('/connect', async (req, res) => {
       return res.json({ store: publicStore(store), products: [], truncated: false, warning: 'empty_public_catalog' })
     }
     const info = await kaspi.merchantInfo(mid, products[0].id, { city })
-    const patch = { name: info.name, rating: info.rating, reviews: info.reviews, productCount: products.length, publicStatus: 'ok', publicError: null, publicCheckedAt: Date.now() }
+    const patch = { name: info.name, rating: info.rating, reviews: info.reviews, productCount: products.length, publicStatus: stale ? 'stale' : 'ok', publicError: null, publicCheckedAt: Date.now() }
     if (store) store = update('stores', store.id, patch)
     else store = insert('stores', { id: uid(), userId: req.user.id, merchantId: mid, ...patch, token: null, createdAt: Date.now() })
+    if (!stale) store = saveCatalogCache(store, products, truncated)
     ensurePriceListFeedKey(store)
-    res.json({ store: publicStore(store), products, truncated })
+    res.json({ store: publicStore(store), products, truncated, stale, fetchedAt, warning: stale ? 'kaspi_stale' : null })
   } catch (e) {
     console.warn(`[stores/connect] Kaspi public catalog unavailable for merchant ${mid}: ${e?.message || e}`)
+    const reason = catalogErrorCode(e)
     const patch = {
       name: store?.name || `Магазин #${mid}`,
       rating: store?.rating ?? null,
       reviews: store?.reviews ?? null,
       productCount: store?.productCount || 0,
       publicStatus: 'unavailable',
-      publicError: 'kaspi_unreachable',
+      publicError: reason,
       publicCheckedAt: Date.now(),
     }
     if (store) store = update('stores', store.id, patch)
     else store = insert('stores', { id: uid(), userId: req.user.id, merchantId: mid, ...patch, token: null, createdAt: Date.now() })
     ensurePriceListFeedKey(store)
-    res.json({ store: publicStore(store), products: [], truncated: false, warning: 'kaspi_unreachable' })
+    const cached = readCatalogCache(store)
+    res.json({
+      store: publicStore(store),
+      products: cached?.products || [],
+      truncated: cached?.truncated || false,
+      stale: !!cached,
+      fetchedAt: cached?.fetchedAt || null,
+      warning: cached ? 'kaspi_stale' : reason,
+    })
   }
 })
 
@@ -421,13 +462,19 @@ storesRouter.get('/:id', async (req, res) => {
   if (!store) return res.status(404).json({ error: 'not_found' })
   const city = req.query.city || kaspi.DEFAULT_CITY
   try {
-    const { products, truncated } = await kaspi.merchantProducts(store.merchantId, { city })
-    store = markPublicCatalog(store, 'ok', null, products.length)
-    res.json(storeCatalogResponse(req.user.id, store, products, truncated))
+    const { products, truncated, stale, fetchedAt } = await kaspi.merchantProducts(store.merchantId, { city })
+    store = markPublicCatalog(store, stale ? 'stale' : 'ok', null, products.length)
+    if (!stale) store = saveCatalogCache(store, products, truncated)
+    res.json(storeCatalogResponse(req.user.id, store, products, truncated, stale ? 'kaspi_stale' : null, { stale, fetchedAt }))
   } catch (e) {
     console.warn(`[stores/get] Kaspi public catalog unavailable for merchant ${store.merchantId}: ${e?.message || e}`)
-    store = markPublicCatalog(store, 'unavailable', 'kaspi_unreachable')
-    res.json(storeCatalogResponse(req.user.id, store, [], false, 'kaspi_unreachable'))
+    store = markPublicCatalog(store, 'unavailable', catalogErrorCode(e))
+    // Yesterday's catalog is worth more than a blank dashboard.
+    const cached = readCatalogCache(store)
+    if (cached) {
+      return res.json(storeCatalogResponse(req.user.id, store, cached.products, cached.truncated, 'kaspi_stale', { stale: true, fetchedAt: cached.fetchedAt }))
+    }
+    res.json(storeCatalogResponse(req.user.id, store, [], false, catalogErrorCode(e)))
   }
 })
 
@@ -588,6 +635,43 @@ storesRouter.post('/:id/token', async (req, res) => {
   } catch (e) {
     res.status(e.status === 401 || e.status === 403 ? 401 : 502).json({ error: 'token_check_failed', status: e.status || null })
   }
+})
+
+/* Kaspi answers 401 to every path under these prefixes, existing or not, so the
+   only way to learn what the cabinet API actually offers is to ask with a real
+   token: then a missing route says 404 and a real one says 200. Worth knowing —
+   a catalog endpoint here would replace scraping the public listing entirely. */
+const API_PROBE_PATHS = [
+  '/shop/api/products/import/schema',
+  '/shop/api/products/offers',
+  '/shop/api/products/offer/list',
+  '/shop/api/products/list',
+  '/shop/api/products/price',
+  '/shop/api/v2/offers',
+  '/shop/api/v2/products',
+  '/shop/api/v2/merchantproducts',
+  '/shop/api/v2/zzz-control-path',
+]
+
+/**
+ * GET /api/stores/:id/api-probe — which merchant API endpoints answer this
+ * token. Read-only, and the token never leaves the server. The control path is
+ * there to show what "not a real endpoint" looks like for this account.
+ */
+storesRouter.get('/:id/api-probe', async (req, res) => {
+  const store = find('stores', (s) => s.id === req.params.id && s.userId === req.user.id)
+  if (!store) return res.status(404).json({ error: 'not_found' })
+  if (!store.token) return res.status(400).json({ error: 'no_token' })
+  const results = []
+  for (const path of API_PROBE_PATHS) {
+    try {
+      const upstream = await kaspi.merchantProbe(store.token, path)
+      results.push(upstream)
+    } catch (e) {
+      results.push({ path, status: null, error: e.cause?.code || e.message })
+    }
+  }
+  res.json({ probed: results })
 })
 
 /** GET /api/stores/:id/orders — real orders via merchant API (needs token). */

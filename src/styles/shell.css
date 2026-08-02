@@ -426,6 +426,42 @@
   box-shadow: var(--shadow-xs);
 }
 
+/* ---------------- Catalog notice ----------------
+   Sits above the page so a rate-limited server never reads as an empty
+   store, whichever page the seller happens to be on. */
+/* The wrapper mirrors .content's box so the strip lines up with the cards. */
+.catalog-banner-wrap {
+  max-width: 1320px;
+  width: 100%;
+  margin: 0 auto;
+  padding: 18px 24px 0;
+}
+.catalog-banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 11px 14px;
+  border-radius: 10px;
+  font-size: 13px;
+  line-height: 1.45;
+}
+.catalog-banner .msym { font-size: 19px; flex-shrink: 0; }
+.catalog-banner.warn {
+  background: var(--warning-100);
+  color: var(--warning);
+  border: 1px solid color-mix(in srgb, var(--warning) 28%, transparent);
+}
+.catalog-banner.bad {
+  background: var(--danger-100);
+  color: var(--danger);
+  border: 1px solid color-mix(in srgb, var(--danger) 28%, transparent);
+}
+@media (max-width: 640px) {
+  .catalog-banner-wrap {
+    padding: 14px 16px 0;
+  }
+}
+
 /* ---------------- Content ---------------- */
 .content {
   padding: 24px 24px 36px;
